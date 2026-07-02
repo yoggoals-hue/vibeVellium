@@ -1,0 +1,380 @@
+import { marked } from "marked";
+import { resolveApiAssetUrl } from "../../shared/api";
+import type { AppSettings, FileAttachment, PromptBlock, RpSceneState } from "../../shared/types/contracts";
+import { DEFAULT_CHAT_SECURITY_SETTINGS, DEFAULT_PROMPT_STACK, REASONING_CALL_NAME, type ChatMode } from "./constants";
+
+export function replacePlaceholders(text: string, charName?: string, userName?: string): string {
+  let result = text;
+  if (charName) result = result.replace(/\{\{char\}\}/gi, charName);
+  if (userName) result = result.replace(/\{\{user\}\}/gi, userName);
+  return result;
+}
+
+export function renderMarkdown(text: string): string {
+  return renderMarkdownSafe(text, DEFAULT_CHAT_SECURITY_SETTINGS);
+}
+
+function escapeHtml(text: string): string {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function escapeAttr(text: string): string {
+  return escapeHtml(text).replace(/`/g, "&#96;");
+}
+
+function sanitizeLinkUrl(raw: string | null | undefined, allowExternalLinks: boolean): string | null {
+  const href = String(raw || "").trim();
+  if (!href) return null;
+  if (/^(javascript|data|vbscript|file):/i.test(href)) return null;
+  if (/^(https?:|mailto:)/i.test(href)) {
+    return allowExternalLinks ? href : null;
+  }
+  if (/^(\/|#|\.{1,2}\/)/.test(href)) {
+    return href;
+  }
+  return null;
+}
+
+function isPrivateIpv4Host(hostname: string): boolean {
+  const parts = hostname.split(".").map((segment) => Number(segment));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+
+  return parts[0] === 10
+    || parts[0] === 127
+    || parts[0] === 0
+    || (parts[0] === 192 && parts[1] === 168)
+    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+    || (parts[0] === 169 && parts[1] === 254);
+}
+
+function isPrivateIpv6Host(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "::1"
+    || normalized.startsWith("fc")
+    || normalized.startsWith("fd")
+    || normalized.startsWith("fe80:");
+}
+
+function isTrustedLocalImageUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(raw);
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return hostname === "localhost"
+      || hostname.endsWith(".local")
+      || isPrivateIpv4Host(hostname)
+      || isPrivateIpv6Host(hostname);
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeImageUrl(raw: string | null | undefined, allowRemoteImages: boolean): string | null {
+  const src = String(raw || "").trim();
+  if (!src) return null;
+  if (/^(javascript|data|vbscript|file):/i.test(src)) return null;
+  if (/^https?:/i.test(src)) {
+    return allowRemoteImages || isTrustedLocalImageUrl(src) ? src : null;
+  }
+  if (/^(\/|\.{1,2}\/)/.test(src)) {
+    return src;
+  }
+  return null;
+}
+
+function renderMarkdownSafe(text: string, security: AppSettings["security"]): string {
+  if (security.sanitizeMarkdown === false) {
+    return marked.parse(text, { async: false, breaks: true, gfm: true }) as string;
+  }
+
+  const renderer = new marked.Renderer();
+  const customRenderer = renderer as any;
+
+  customRenderer.html = (token: { text?: string } | string) => {
+    const raw = typeof token === "string" ? token : String(token?.text || "");
+    return escapeHtml(raw);
+  };
+
+  customRenderer.link = function link(token: { href?: string; title?: string | null; tokens?: unknown[] }) {
+    const href = sanitizeLinkUrl(token?.href, security.allowExternalLinks);
+    const textHtml = this.parser?.parseInline?.(Array.isArray(token?.tokens) ? token.tokens : []) || escapeHtml(token?.href || "");
+    if (!href) return textHtml;
+    const title = token?.title ? ` title="${escapeAttr(token.title)}"` : "";
+    return `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer nofollow"${title}>${textHtml}</a>`;
+  };
+
+  customRenderer.image = (token: { href?: string; text?: string; title?: string | null }) => {
+    const src = sanitizeImageUrl(token?.href, security.allowRemoteImages);
+    if (!src) return "";
+    const alt = escapeAttr(String(token?.text || ""));
+    const title = token?.title ? ` title="${escapeAttr(token.title)}"` : "";
+    return `<img src="${escapeAttr(src)}" alt="${alt}"${title} loading="lazy" referrerpolicy="no-referrer" />`;
+  };
+
+  return marked.parse(text, {
+    async: false,
+    breaks: true,
+    gfm: true,
+    renderer
+  }) as string;
+}
+
+export function renderContent(
+  text: string,
+  charName?: string,
+  userName?: string,
+  security: AppSettings["security"] = DEFAULT_CHAT_SECURITY_SETTINGS
+): string {
+  return renderMarkdownSafe(replacePlaceholders(text, charName, userName), security);
+}
+
+function renderedHtmlHasVisibleContent(html: string): boolean {
+  const source = String(html || "");
+  if (/<(?:img|video|iframe|audio|table|hr)\b/i.test(source)) return true;
+  const text = source
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;|&lt;|&gt;|&quot;|&#39;|&#96;/gi, "x")
+    .trim();
+  return text.length > 0;
+}
+
+export function renderContentWithFallback(
+  text: string,
+  charName?: string,
+  userName?: string,
+  security: AppSettings["security"] = DEFAULT_CHAT_SECURITY_SETTINGS
+): string {
+  const replaced = replacePlaceholders(text, charName, userName);
+  const html = renderMarkdownSafe(replaced, security);
+  if (renderedHtmlHasVisibleContent(html) || !String(replaced || "").trim()) {
+    return html;
+  }
+  return `<p>${escapeHtml(replaced).replace(/\r?\n/g, "<br />")}</p>`;
+}
+
+export function guessMimeType(filename: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  const map: Record<string, string> = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    svg: "image/svg+xml"
+  };
+  return map[ext] || "application/octet-stream";
+}
+
+export function imageSourceFromAttachment(att: FileAttachment): string | null {
+  if (att.type !== "image") return null;
+  if ((att.mimeType || "").toLowerCase() === "image/svg+xml") return null;
+  if (att.dataUrl?.startsWith("data:image/")) return att.dataUrl;
+  const resolvedUrl = resolveApiAssetUrl(att.url);
+  if (!resolvedUrl) return null;
+  if (/^blob:/i.test(resolvedUrl)) return resolvedUrl;
+  if (/^https?:/i.test(resolvedUrl) || resolvedUrl.startsWith("/")) {
+    return resolvedUrl.toLowerCase().includes(".svg") ? null : resolvedUrl;
+  }
+  return null;
+}
+
+export function normalizePromptStack(raw: PromptBlock[] | null | undefined): PromptBlock[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [...DEFAULT_PROMPT_STACK];
+  return [...raw]
+    .sort((a, b) => a.order - b.order)
+    .map((block, index) => ({ ...block, order: index + 1 }));
+}
+
+export function resolveChatMode(state: Partial<RpSceneState> | null | undefined): ChatMode {
+  if (state?.chatMode === "rp" || state?.chatMode === "light_rp" || state?.chatMode === "pure_chat") {
+    return state.chatMode;
+  }
+  if (state?.pureChatMode === true) return "pure_chat";
+  return "rp";
+}
+
+export function sanitizeSceneVariables(variables: Record<string, string> | null | undefined): Record<string, string> {
+  const next = { ...(variables || {}) };
+  delete next.location;
+  delete next.time;
+  return next;
+}
+
+export function readSceneVarPercent(variables: Record<string, string>, key: string, fallback: number): number {
+  const raw = Number(variables[key]);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(raw)));
+}
+
+export interface ParsedToolCallContent {
+  callId: string;
+  name: string;
+  args: string;
+  result: string;
+  resultSummary?: string;
+  media?: Array<{
+    type: "image";
+    url: string;
+    markdown?: string;
+    alt?: string;
+  }>;
+}
+
+export interface ParsedToolResultDisplay {
+  result: string;
+  resultSummary?: string;
+  media: Array<{
+    type: "image";
+    url: string;
+    markdown?: string;
+    alt?: string;
+  }>;
+}
+
+export interface ParsedInlineReasoning {
+  content: string;
+  reasoning: string;
+}
+
+export function parseInlineReasoning(text: string): ParsedInlineReasoning {
+  const source = String(text || "");
+  const pattern = /<think>([\s\S]*?)<\/think>/gi;
+  let lastIndex = 0;
+  let visible = "";
+  const reasoningParts: string[] = [];
+
+  for (const match of source.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    visible += source.slice(lastIndex, index);
+    const reasoning = String(match[1] || "").trim();
+    if (reasoning) reasoningParts.push(reasoning);
+    lastIndex = index + match[0].length;
+  }
+
+  if (lastIndex === 0) {
+    return {
+      content: source,
+      reasoning: ""
+    };
+  }
+
+  visible += source.slice(lastIndex);
+  return {
+    content: visible,
+    reasoning: reasoningParts.join("\n\n").trim()
+  };
+}
+
+export function normalizeReasoningDisplayText(text: string) {
+  const source = String(text || "").trim();
+  if (!source) return "";
+  const lines = source.split(/\r?\n/);
+  const meaningfulLines = lines.map((line) => line.trim()).filter(Boolean);
+  if (meaningfulLines.length < 6) return source;
+
+  const codeOrListLines = meaningfulLines.filter((line) => /^(```|[-*+]\s|\d+[.)]\s|#{1,6}\s|\|)/.test(line)).length;
+  if (codeOrListLines > 0) return source;
+
+  const shortFragmentLines = meaningfulLines.filter((line) => (
+    line.length <= 32 && line.split(/\s+/).length <= 3
+  )).length;
+  const shortFragmentRatio = shortFragmentLines / meaningfulLines.length;
+  if (shortFragmentRatio < 0.7) return source;
+
+  return meaningfulLines
+    .join(" ")
+    .replace(/\s+([.,!?;:])/g, "$1")
+    .replace(/\s+(['’]s\b)/gi, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function parseToolResultDisplay(rawResult: string): ParsedToolResultDisplay {
+  const source = String(rawResult || "").trim();
+  if (!source.startsWith("{")) {
+    return {
+      result: String(rawResult || ""),
+      resultSummary: undefined,
+      media: []
+    };
+  }
+  try {
+    const parsed = JSON.parse(source) as {
+      kind?: unknown;
+      summary?: unknown;
+      media?: Array<{ type?: unknown; url?: unknown; markdown?: unknown; alt?: unknown }>;
+    };
+    if (parsed.kind !== "vellium_media_result" || !Array.isArray(parsed.media)) {
+      return {
+        result: String(rawResult || ""),
+        resultSummary: undefined,
+        media: []
+      };
+    }
+    const media = parsed.media
+      .map((item) => {
+        const type = String(item?.type || "").trim();
+        const url = String(item?.url || "").trim();
+        if (type !== "image" || !url) return null;
+        return {
+          type: "image" as const,
+          url,
+          markdown: String(item?.markdown || "").trim() || undefined,
+          alt: String(item?.alt || "").trim() || undefined
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+    return {
+      result: String(rawResult || ""),
+      resultSummary: String(parsed.summary || "").trim() || "Image created and shown to the user.",
+      media
+    };
+  } catch {
+    return {
+      result: String(rawResult || ""),
+      resultSummary: undefined,
+      media: []
+    };
+  }
+}
+
+export function parseToolCallContent(content: string): ParsedToolCallContent {
+
+  try {
+    const parsed = JSON.parse(content) as Partial<ParsedToolCallContent> & { kind?: string };
+    if (parsed && typeof parsed === "object" && parsed.kind === "tool_call") {
+      const resultDisplay = parseToolResultDisplay(String(parsed.result || ""));
+      return {
+        callId: String(parsed.callId || "").trim(),
+        name: String(parsed.name || "tool").trim() || "tool",
+        args: String(parsed.args || "{}"),
+        result: resultDisplay.result,
+        resultSummary: resultDisplay.resultSummary,
+        media: resultDisplay.media
+      };
+    }
+  } catch {
+    // Legacy tool format fallback below.
+  }
+
+  const lines = String(content || "").split("\n");
+  const first = lines.find((line) => line.startsWith("Tool:")) || "";
+  const name = first.replace(/^Tool:\s*/i, "").trim() || "tool";
+  const resultDisplay = parseToolResultDisplay(String(content || ""));
+  return {
+    callId: "",
+    name,
+    args: name === REASONING_CALL_NAME ? "" : "{}",
+    result: resultDisplay.result,
+    resultSummary: resultDisplay.resultSummary,
+    media: resultDisplay.media
+  };
+}

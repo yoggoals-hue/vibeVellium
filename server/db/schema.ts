@@ -1,0 +1,499 @@
+import type Database from "better-sqlite3";
+
+const SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    recovery_hash TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    payload TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS providers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    api_key_cipher TEXT NOT NULL,
+    proxy_url TEXT,
+    full_local_only INTEGER NOT NULL DEFAULT 0,
+    provider_type TEXT NOT NULL DEFAULT 'openai',
+    adapter_id TEXT,
+    manual_models TEXT NOT NULL DEFAULT '[]'
+  );
+
+  CREATE TABLE IF NOT EXISTS chats (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    lorebook_ids TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS branches (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    parent_message_id TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    token_count INTEGER NOT NULL,
+    parent_id TEXT,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    generation_started_at TEXT,
+    generation_completed_at TEXT,
+    generation_duration_ms INTEGER,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS characters (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    card_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS lorebooks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    entries_json TEXT NOT NULL DEFAULT '[]',
+    source_character_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS rp_presets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS rp_scene_state (
+    chat_id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS rp_memory_entries (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS writer_projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    character_ids TEXT NOT NULL DEFAULT '[]',
+    notes_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS writer_chapters (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS writer_scenes (
+    id TEXT PRIMARY KEY,
+    chapter_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    goals TEXT NOT NULL,
+    conflicts TEXT NOT NULL,
+    outcomes TEXT NOT NULL,
+    character_id TEXT,
+    chat_id TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS writer_beats (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS writer_consistency_reports (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS writer_exports (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    export_type TEXT NOT NULL,
+    output_path TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS writer_chapter_summaries (
+    chapter_id TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS writer_project_summaries (
+    project_id TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS writer_summary_lenses (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    target_id TEXT,
+    prompt TEXT NOT NULL,
+    output TEXT NOT NULL DEFAULT '',
+    source_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS prompt_blocks (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    ordering INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS user_personas (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    personality TEXT NOT NULL DEFAULT '',
+    scenario TEXT NOT NULL DEFAULT '',
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS rag_collections (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT 'global',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS rag_documents (
+    id TEXT PRIMARY KEY,
+    collection_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'manual',
+    source_id TEXT,
+    content_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'indexed_lexical',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (collection_id) REFERENCES rag_collections(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS rag_chunks (
+    id TEXT PRIMARY KEY,
+    collection_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    token_count INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (collection_id) REFERENCES rag_collections(id) ON DELETE CASCADE,
+    FOREIGN KEY (document_id) REFERENCES rag_documents(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS rag_vectors (
+    chunk_id TEXT NOT NULL,
+    model_key TEXT NOT NULL,
+    dim INTEGER NOT NULL,
+    vector_blob BLOB NOT NULL,
+    norm REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (chunk_id, model_key),
+    FOREIGN KEY (chunk_id) REFERENCES rag_chunks(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS chat_rag_bindings (
+    chat_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    collection_ids TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS writer_rag_bindings (
+    project_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    collection_ids TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES writer_projects(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_threads (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    developer_prompt TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'idle',
+    mode TEXT NOT NULL DEFAULT 'build',
+    hero_character_id TEXT,
+    workspace_root TEXT NOT NULL DEFAULT '',
+    memory_summary TEXT NOT NULL DEFAULT '',
+    memory_updated_at TEXT,
+    provider_id TEXT,
+    model_id TEXT,
+    tool_mode TEXT NOT NULL DEFAULT 'enabled',
+    max_iterations INTEGER NOT NULL DEFAULT 6,
+    max_subagents INTEGER NOT NULL DEFAULT 2,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_skills (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    instructions TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    ordering INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (thread_id) REFERENCES agent_threads(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_messages (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    run_id TEXT,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (thread_id) REFERENCES agent_threads(id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    parent_run_id TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'running',
+    depth INTEGER NOT NULL DEFAULT 0,
+    summary TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (thread_id) REFERENCES agent_threads(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_events (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    parent_event_id TEXT,
+    event_type TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    ordering INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (thread_id) REFERENCES agent_threads(id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_event_id) REFERENCES agent_events(id) ON DELETE SET NULL
+  );
+
+  -- =====================================================================
+  -- VibeVellium memory system: Action Tree
+  -- One row per RP turn. Auto-extracted from assistant reply via
+  -- <action_tree>{...}</action_tree> inline block or second LLM call.
+  -- =====================================================================
+  CREATE TABLE IF NOT EXISTS action_tree_nodes (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    branch_id TEXT,
+    turn INTEGER NOT NULL,
+    character TEXT NOT NULL DEFAULT '',
+    actions_json TEXT NOT NULL DEFAULT '[]',
+    dialogue TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT 'pending',
+    notes TEXT NOT NULL DEFAULT '',
+    manual INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS action_tree_config (
+    chat_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    format TEXT NOT NULL DEFAULT 'inline',
+    model_id TEXT,
+    injection_count INTEGER NOT NULL DEFAULT 15,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
+
+  -- =====================================================================
+  -- VibeVellium memory system: Future Guides
+  -- User-defined future targets the model should subtly steer toward.
+  -- strength = user-set 0..1; urgency = auto-computed; status = active|reached|abandoned
+  -- =====================================================================
+  CREATE TABLE IF NOT EXISTS future_guides (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    guidance TEXT NOT NULL DEFAULT '',
+    key_actions_json TEXT NOT NULL DEFAULT '[]',
+    target_turn INTEGER NOT NULL,
+    strength REAL NOT NULL DEFAULT 0.5,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    reached_at TEXT,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
+
+  -- =====================================================================
+  -- VibeVellium Phase 2: Free Will (dice-roll interventions)
+  -- =====================================================================
+  CREATE TABLE IF NOT EXISTS free_will_config (
+    chat_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    intensity INTEGER NOT NULL DEFAULT 30,
+    frequency TEXT NOT NULL DEFAULT 'every_3',
+    auto_pause INTEGER NOT NULL DEFAULT 1,
+    tier_no_op INTEGER NOT NULL DEFAULT 1,
+    tier_biological INTEGER NOT NULL DEFAULT 1,
+    tier_mood INTEGER NOT NULL DEFAULT 1,
+    tier_scene INTEGER NOT NULL DEFAULT 1,
+    tier_weird INTEGER NOT NULL DEFAULT 1,
+    tier_critical INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS free_will_rolls (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    turn INTEGER NOT NULL,
+    roll_value INTEGER NOT NULL,
+    tier TEXT NOT NULL DEFAULT 'no_op',
+    prompt TEXT NOT NULL DEFAULT '',
+    skipped INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
+
+  -- =====================================================================
+  -- VibeVellium Phase 2: Body State Meters (subtle, per-character)
+  -- =====================================================================
+  CREATE TABLE IF NOT EXISTS body_state_config (
+    chat_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    decay_rate INTEGER NOT NULL DEFAULT 5,
+    meter_hunger INTEGER NOT NULL DEFAULT 1,
+    meter_fatigue INTEGER NOT NULL DEFAULT 1,
+    meter_arousal INTEGER NOT NULL DEFAULT 0,
+    inject_threshold_low INTEGER NOT NULL DEFAULT 30,
+    inject_threshold_high INTEGER NOT NULL DEFAULT 70,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS body_state_meters (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    meter TEXT NOT NULL,
+    value INTEGER NOT NULL DEFAULT 50,
+    locked INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    UNIQUE(chat_id, character_id, meter),
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
+
+  -- =====================================================================
+  -- VibeVellium Phase 2: Character Relationships (open-vocabulary words)
+  -- =====================================================================
+  CREATE TABLE IF NOT EXISTS character_relationships (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    source_character TEXT NOT NULL,
+    target_character TEXT NOT NULL,
+    word TEXT NOT NULL,
+    turn INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
+
+  -- =====================================================================
+  -- VibeVellium Phase 2: Message Tags (auto-extracted, searchable)
+  -- =====================================================================
+  CREATE TABLE IF NOT EXISTS message_tags (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    message_id TEXT,
+    tag TEXT NOT NULL,
+    turn INTEGER,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
+`;
+
+export function applySchema(db: Database.Database) {
+  db.exec(SCHEMA_SQL);
+}
+
+export function applySchemaIndexes(db: Database.Database) {
+  try {
+    db.exec("CREATE INDEX IF NOT EXISTS idx_rag_documents_collection ON rag_documents(collection_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_rag_chunks_collection ON rag_chunks(collection_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_rag_chunks_document ON rag_chunks(document_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_rag_vectors_model ON rag_vectors(model_key)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_agent_threads_updated ON agent_threads(updated_at)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_agent_skills_thread ON agent_skills(thread_id, ordering)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_agent_messages_thread ON agent_messages(thread_id, created_at)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_agent_runs_thread ON agent_runs(thread_id, created_at)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_agent_events_thread ON agent_events(thread_id, created_at)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_action_tree_chat ON action_tree_nodes(chat_id, turn)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_future_guides_chat ON future_guides(chat_id, status)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_free_will_rolls_chat ON free_will_rolls(chat_id, created_at)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_body_state_meters_chat ON body_state_meters(chat_id, character_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_character_relationships_chat ON character_relationships(chat_id, source_character, target_character)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_message_tags_chat ON message_tags(chat_id, tag)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_message_tags_tag ON message_tags(tag)");
+    db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunk_fts USING fts5(chunk_id UNINDEXED, content, tokenize='unicode61')");
+  } catch {
+    // Keep startup resilient if a platform SQLite build lacks FTS5.
+  }
+}

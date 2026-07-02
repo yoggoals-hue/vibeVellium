@@ -1,0 +1,52 @@
+directories:
+  output: release
+  buildResources: build
+appId: com.vibevellium.app
+productName: VibeVellium
+files:
+  - filter:
+      - dist/**/*
+      - dist-electron/**/*
+      - server-bundle.mjs
+      - package.json
+extraResources:
+  - from: data/bundled-plugins
+    to: data/bundled-plugins
+    filter:
+      - '**/*'
+asar: true
+asarUnpack:
+  - node_modules/better-sqlite3/build/Release/*.node
+  - node_modules/bindings/**
+  - node_modules/file-uri-to-path/**
+buildDependenciesFromSource: true
+npmRebuild: true
+mac:
+  icon: build/icon.icns
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: dir
+      arch:
+        - x64
+        - arm64
+  category: public.app-category.entertainment
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+linux:
+  icon: build/icon.png
+  category: Utility
+  target:
+    - target: AppImage
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+electronVersion: 41.2.0

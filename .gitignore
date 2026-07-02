@@ -1,0 +1,76 @@
+```
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+*.js.map
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Python (if applicable)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# Cache directories
+.cache/
+.mypy_cache/
+.pytest_cache/
+
+# Distribution / packaging
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# Compiled Binary files
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Debug / profiling
+*.prof
+*.trace
+
+# Lock files
+package-lock.json
+yarn.lock
+
+# IDE specific
+.vs/
+*.swp
+*.swo
+
+# Local configuration
+config.local.*
+settings.local.*
+
+```
