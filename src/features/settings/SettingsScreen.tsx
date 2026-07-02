@@ -473,6 +473,39 @@ export function SettingsScreen({
     }
   }
 
+  /**
+   * Patch a runtime-affecting setting (lanSharing / serverPort / enableServer)
+   * and then ask the Electron main process to restart the embedded server so
+   * the new value actually takes effect on the listening socket. Without this,
+   * the toggle would only update the DB row but Express would keep listening
+   * on the old bind host (e.g. 127.0.0.1 instead of 0.0.0.0).
+   *
+   * In dev mode (or browser/preview without electronAPI), the restart is
+   * skipped — the dev server has its own watcher.
+   */
+  async function patchRuntimeSetting(next: Partial<AppSettings>) {
+    await patch(next);
+    if (typeof window !== "undefined" && window.electronAPI?.restartServer) {
+      try {
+        const result = await window.electronAPI.restartServer();
+        if (result?.ok) {
+          const bind = result.lanSharing ? "0.0.0.0" : "127.0.0.1";
+          showResult(`Server restarted on ${bind}:${result.port}`, "success");
+        } else {
+          showResult(
+            `Settings saved, but server restart failed: ${result?.error || "unknown error"}. Please quit and relaunch the app.`,
+            "error"
+          );
+        }
+      } catch (error) {
+        showResult(
+          `Settings saved, but server restart failed: ${error instanceof Error ? error.message : String(error)}. Please quit and relaunch the app.`,
+          "error"
+        );
+      }
+    }
+  }
+
   function handleThemeModeChange(nextValue: string) {
     if (!settings) return;
     const nextTheme = nextValue as AppSettings["theme"];
@@ -1547,14 +1580,14 @@ export function SettingsScreen({
                         <div className="text-sm font-medium text-text-primary">{t("settings.enableServer")}</div>
                         <div className="mt-0.5 text-[11px] text-text-tertiary">{t("settings.localServerDesc")}</div>
                       </div>
-                      <ToggleSwitch checked={settings.enableServer !== false} onChange={(e) => patch({ enableServer: e.target.checked })} />
+                      <ToggleSwitch checked={settings.enableServer !== false} onChange={(e) => patchRuntimeSetting({ enableServer: e.target.checked })} />
                     </div>
                     <div className="settings-toggle-row">
                       <div className="min-w-0">
                         <div className="text-sm font-medium text-text-primary">{t("settings.lanSharing")}</div>
                         <div className="mt-0.5 text-[11px] text-text-tertiary">{t("settings.lanSharingDesc")}</div>
                       </div>
-                      <ToggleSwitch checked={settings.lanSharing === true} onChange={(e) => patch({ lanSharing: e.target.checked })} />
+                      <ToggleSwitch checked={settings.lanSharing === true} onChange={(e) => patchRuntimeSetting({ lanSharing: e.target.checked })} />
                     </div>
                     <div className="space-y-1.5">
                       <FieldLabel>{t("settings.serverPort")}</FieldLabel>
@@ -1562,11 +1595,14 @@ export function SettingsScreen({
                         type="number"
                         min={1}
                         max={65535}
-                        value={Number.isFinite(settings.serverPort) ? settings.serverPort : 3001}
-                        onChange={(e) => {
+                        defaultValue={Number.isFinite(settings.serverPort) ? settings.serverPort : 3001}
+                        onBlur={(e) => {
                           const v = Number(e.target.value);
-                          if (Number.isInteger(v) && v >= 1 && v <= 65535) {
-                            patch({ serverPort: v });
+                          if (Number.isInteger(v) && v >= 1 && v <= 65535 && v !== settings.serverPort) {
+                            void patchRuntimeSetting({ serverPort: v });
+                          } else {
+                            // reset to current valid value if user typed garbage
+                            e.target.value = String(Number.isFinite(settings.serverPort) ? settings.serverPort : 3001);
                           }
                         }}
                         className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary"

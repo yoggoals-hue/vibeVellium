@@ -16,10 +16,15 @@ export function startServer(
   host: string = runtimeOptions.host
 ): Promise<number> {
   return new Promise((resolve, reject) => {
-    // Use 0.0.0.0 if LAN sharing is enabled, otherwise bind to loopback only
-    const bindHost = runtimeOptions.lanSharing ? "0.0.0.0" : host;
+    // Re-read SLV_LAN_SHARING at call time (not module load time) so that
+    // callers (e.g. the Electron main process's `server:restart` IPC) can
+    // flip LAN sharing on/off without forcing a full app restart. The env
+    // var is the source of truth — applyServerRuntimeEnv() keeps it in sync
+    // with runtimeOptions.lanSharing, and we re-derive the bind host here.
+    const lanSharingNow = process.env.SLV_LAN_SHARING === "1";
+    const bindHost = lanSharingNow ? "0.0.0.0" : host;
     const server = app.listen(port, bindHost, () => {
-      console.log(`Server running on ${formatServerUrl({ host: bindHost, port })}`);
+      console.log(`Server running on ${formatServerUrl({ host: bindHost, port })} (lanSharing=${lanSharingNow})`);
       resolve(port);
     });
     server.on("error", reject);

@@ -36,6 +36,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   stopManagedBackend: (backendId: string) => ipcRenderer.invoke("managed-backends:stop", backendId) as Promise<ManagedBackendRuntimeState | null>,
   stopActiveManagedBackend: () => ipcRenderer.invoke("managed-backends:stop-active") as Promise<{ ok: boolean }>,
   getManagedBackendLogs: (backendId: string) => ipcRenderer.invoke("managed-backends:logs", backendId) as Promise<ManagedBackendLogEntry[]>,
+  restartServer: () => ipcRenderer.invoke("server:restart") as Promise<{
+    ok: boolean;
+    host?: string;
+    port?: number;
+    lanSharing?: boolean;
+    url?: string;
+    error?: string;
+  }>,
   onMaximizedChange: (callback: (maximized: boolean) => void) => {
     ipcRenderer.on("window:maximized", (_event, maximized: boolean) => {
       callback(maximized);

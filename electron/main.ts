@@ -3,13 +3,14 @@ import path from "path";
 import { existsSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { pathToFileURL } from "url";
+import Database from "better-sqlite3";
 import { ManagedBackendManager } from "./managedBackends";
 import type { ManagedBackendConfig } from "../src/shared/types/contracts";
-import { applyServerRuntimeEnv, formatServerUrl, parseServerRuntimeOptions } from "../server/runtimeConfig";
+import { applyServerRuntimeEnv, formatServerUrl, parseServerRuntimeOptions, type ServerRuntimeOptions } from "../server/runtimeConfig";
 import type { Server as HttpServer } from "http";
 
 const isDev = !app.isPackaged;
-const runtimeOptions = parseServerRuntimeOptions(process.argv.slice(1));
+let runtimeOptions = parseServerRuntimeOptions(process.argv.slice(1));
 const isHeadless = runtimeOptions.headless;
 
 // Prevent multiple production instances, but allow a local dev build
@@ -71,9 +72,76 @@ let embeddedServerInstance: HttpServer | null = null;
 const desktopPetPeerSeenAt = new Map<string, number>();
 const managedBackendManager = new ManagedBackendManager();
 
-const SERVER_PORT = runtimeOptions.port;
-const SERVER_HOST = runtimeOptions.host;
+let SERVER_PORT = runtimeOptions.port;
+let SERVER_HOST = runtimeOptions.host;
 const SERVER_START_TIMEOUT_MS = 20000;
+
+/**
+ * Resolve the path to the SQLite settings DB the same way the server does.
+ * Mirrors server/db/paths.ts but without importing server code (which would
+ * pull in the whole server bundle at Electron boot).
+ */
+function resolveSettingsDbPath(): string | null {
+  const dataDir = process.env.SLV_DATA_DIR
+    || (isDev ? path.join(process.cwd(), "data") : path.join(app.getPath("userData"), "data"));
+  const vellium = path.join(dataDir, "vellum.db");
+  const legacy = path.join(dataDir, "sillytauri.db");
+  if (existsSync(vellium)) return vellium;
+  if (existsSync(legacy)) return legacy;
+  return null;
+}
+
+/**
+ * Read persisted runtime-affecting settings (lanSharing, serverPort, enableServer)
+ * from the SQLite DB so the user's toggles actually take effect on the next boot
+ * of the bundled server. Without this, parseServerRuntimeOptions() only consults
+ * argv + env, and the LAN Sharing toggle in the UI never reaches the listener.
+ */
+function readPersistedRuntimeSettings(): { lanSharing?: boolean; serverPort?: number; enableServer?: boolean } {
+  const dbPath = resolveSettingsDbPath();
+  if (!dbPath) return {};
+  try {
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      const row = db.prepare("SELECT payload FROM settings WHERE id = 1").get() as { payload?: string } | undefined;
+      if (!row?.payload) return {};
+      const parsed = JSON.parse(row.payload) as Record<string, unknown>;
+      const out: { lanSharing?: boolean; serverPort?: number; enableServer?: boolean } = {};
+      if (typeof parsed.lanSharing === "boolean") out.lanSharing = parsed.lanSharing;
+      if (typeof parsed.serverPort === "number" && Number.isFinite(parsed.serverPort)) {
+        const port = Math.floor(parsed.serverPort);
+        if (port >= 1 && port <= 65535) out.serverPort = port;
+      }
+      if (typeof parsed.enableServer === "boolean") out.enableServer = parsed.enableServer;
+      return out;
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    console.warn("[vellium] Failed to read persisted runtime settings:", error);
+    return {};
+  }
+}
+
+/**
+ * Merge persisted DB settings into runtimeOptions so the bundled server is
+ * started with the user's saved LAN sharing / port / enable-server preferences.
+ * Called once after app.whenReady() (so SLV_DATA_DIR is set and app.getPath is
+ * available) and again whenever the user toggles one of these settings at runtime.
+ */
+function syncRuntimeOptionsFromDb(): void {
+  const persisted = readPersistedRuntimeSettings();
+  const merged: ServerRuntimeOptions = {
+    ...runtimeOptions,
+    lanSharing: persisted.lanSharing ?? runtimeOptions.lanSharing,
+    port: persisted.serverPort ?? runtimeOptions.port,
+    enableServer: persisted.enableServer ?? runtimeOptions.enableServer
+  };
+  runtimeOptions = merged;
+  SERVER_PORT = merged.port;
+  SERVER_HOST = merged.host;
+  applyServerRuntimeEnv(merged);
+}
 
 type DesktopPetConfig = {
   characterId?: string;
@@ -1890,6 +1958,14 @@ function startProductionServer(): Promise<void> {
 
     // These are read at module init time in the bundled server.
     process.env.SLV_DATA_DIR = process.env.SLV_DATA_DIR || path.join(app.getPath("userData"), "data");
+
+    // Pull the user's saved LAN sharing / port / enableServer out of the DB
+    // BEFORE we import the bundled server, so its module-init `parseServerRuntimeOptions()`
+    // sees the correct values. Without this, parseServerRuntimeOptions() would
+    // only see argv + env, and the LAN Sharing toggle in the UI would have no
+    // effect even after a full app restart.
+    syncRuntimeOptionsFromDb();
+
     applyServerRuntimeEnv({
       ...runtimeOptions,
       headless: isHeadless || runtimeOptions.headless,
@@ -2313,6 +2389,67 @@ ipcMain.handle("managed-backends:stop-active", async () => {
 
 ipcMain.handle("managed-backends:logs", (_event, backendId: unknown) => {
   return managedBackendManager.getLogs(String(backendId || "").trim());
+});
+
+/**
+ * Restart the embedded Express server so runtime-affecting settings
+ * (lanSharing, serverPort, enableServer) actually take effect without
+ * requiring the user to quit and relaunch the whole Electron app.
+ *
+ * Flow:
+ *   1. Stop the currently listening server (releases the port + bind).
+ *   2. Re-read lanSharing/port/enableServer from the SQLite settings DB
+ *      (the UI just wrote a new value there via PATCH /api/settings).
+ *   3. Re-apply env so the bundled server module picks up the new value
+ *      via its module-init parseServerRuntimeOptions() on next import.
+ *   4. Clear the cached embeddedServerStart promise + cached module so
+ *      startProductionServer() actually re-imports and re-binds.
+ *   5. Re-run startProductionServer() and wait for /api/health.
+ *
+ * Returns the new bind host + port so the renderer can show a toast.
+ */
+ipcMain.handle("server:restart", async () => {
+  try {
+    // 1. Stop existing listener.
+    try {
+      const { stopServer } = await import("../server/index.js");
+      await stopServer();
+    } catch (error) {
+      console.warn("[vellium] stopServer during restart failed (continuing):", error);
+    }
+
+    // 2-3. Re-read DB and re-apply env. This writes the new lanSharing /
+    //      port / enableServer values into process.env.SLV_LAN_SHARING etc.
+    //      The bundled server's startServer() re-reads SLV_LAN_SHARING at
+    //      call time (not module load time), so we don't need to bust the
+    //      ES module cache — just call startServer() again.
+    syncRuntimeOptionsFromDb();
+
+    // 4. Invalidate the cached startup promise so startProductionServer()
+    //    actually runs again instead of returning the resolved promise.
+    embeddedServerStart = null;
+
+    // 5. Re-start. startProductionServer() will re-import the bundled server
+    //    module (cached, so cheap) and call startServer() with the freshly
+    //    synced SERVER_PORT / SERVER_HOST, which will bind to 0.0.0.0 or
+    //    127.0.0.1 based on the just-updated env var.
+    await startProductionServer();
+    await waitForServerReady();
+
+    return {
+      ok: true,
+      host: SERVER_HOST,
+      port: SERVER_PORT,
+      lanSharing: runtimeOptions.lanSharing,
+      url: formatServerUrl({ host: SERVER_HOST, port: SERVER_PORT })
+    };
+  } catch (error) {
+    console.error("[vellium] server:restart failed:", error);
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
 });
 
 app.on("second-instance", () => {

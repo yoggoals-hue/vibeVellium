@@ -3377,6 +3377,7 @@ var McpStdioClient = class {
       this.rejectAll(new Error(`MCP server exited: ${this.config.name || this.config.id}${suffix}`));
     });
   }
+  config;
   proc;
   wireFormat;
   pending = /* @__PURE__ */ new Map();
@@ -21723,9 +21724,10 @@ var app = createApp();
 var serverInstance = null;
 function startServer(port = runtimeOptions.port, host = runtimeOptions.host) {
   return new Promise((resolve8, reject) => {
-    const bindHost = runtimeOptions.lanSharing ? "0.0.0.0" : host;
+    const lanSharingNow = process.env.SLV_LAN_SHARING === "1";
+    const bindHost = lanSharingNow ? "0.0.0.0" : host;
     const server = app.listen(port, bindHost, () => {
-      console.log(`Server running on ${formatServerUrl({ host: bindHost, port })}`);
+      console.log(`Server running on ${formatServerUrl({ host: bindHost, port })} (lanSharing=${lanSharingNow})`);
       resolve8(port);
     });
     server.on("error", reject);

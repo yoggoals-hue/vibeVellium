@@ -29,6 +29,14 @@ export interface ElectronAPI {
   stopManagedBackend: (backendId: string) => Promise<ManagedBackendRuntimeState | null>;
   stopActiveManagedBackend: () => Promise<{ ok: boolean }>;
   getManagedBackendLogs: (backendId: string) => Promise<ManagedBackendLogEntry[]>;
+  restartServer: () => Promise<{
+    ok: boolean;
+    host?: string;
+    port?: number;
+    lanSharing?: boolean;
+    url?: string;
+    error?: string;
+  }>;
   onMaximizedChange: (callback: (maximized: boolean) => void) => void;
   onManagedBackendsUpdate: (callback: (states: ManagedBackendRuntimeState[]) => void) => void;
 }
