@@ -118,10 +118,21 @@ export const memoryClient = {
     notes?: string;
   }) =>
     post<{ node: ActionTreeNodeDto }>(`/memory/${chatId}/action-tree/nodes`, body),
-  actionTreeUpdateNode: (nodeId: string, patch: Partial<Pick<ActionTreeNodeDto, "character" | "actions" | "dialogue" | "outcome" | "notes" | "turn">>) =>
+  actionTreeUpdateNode: (nodeId: string, patch: Partial<Pick<ActionTreeNodeDto, "character" | "actions" | "dialogue" | "outcome" | "notes" | "turn" | "tags" | "relationships">>) =>
     patchReq<{ node: ActionTreeNodeDto }>(`/memory/action-tree/nodes/${nodeId}`, patch),
   actionTreeDeleteNode: (nodeId: string) =>
     del<{ ok: boolean }>(`/memory/action-tree/nodes/${nodeId}`),
+
+  // Manual AI generation: send the last N (default 15) user+assistant messages
+  // to the active provider/model and persist a new action-tree node. Use this
+  // when the model doesn't natively emit <action_tree> blocks during replies.
+  actionTreeGenerate: (chatId: string, body?: { windowSize?: number; modelId?: string; persist?: boolean }) =>
+    post<{
+      node: ActionTreeNodeDto | null;
+      draft: { character: string; actions: string[]; dialogue: string; outcome: ActionTreeNodeDto["outcome"]; notes: string; tags: string[]; relationships: Array<{ source: string; target: string; word: string }> };
+      meta: { chatId: string; windowSize: number; modelId: string; providerId: string; currentTurn: number; generatedAt: string; persisted: boolean };
+      reasoning: string;
+    }>(`/memory/${chatId}/action-tree/generate`, body || {}, { timeoutMs: 90_000 }),
 
   // Future Guides
   futureGuidesList: (chatId: string) =>
@@ -170,6 +181,17 @@ export const memoryClient = {
   // Relationships
   relationshipsList: (chatId: string) =>
     get<{ latest: RelationshipDto[]; recent: RelationshipDto[] }>(`/memory/${chatId}/relationships`),
+
+  // Manual AI generation: send the last N (default 15) user+assistant messages
+  // to the active provider/model and persist new relationship rows. The model
+  // sees the current relationships list so it can carry forward unchanged ones.
+  relationshipsGenerate: (chatId: string, body?: { windowSize?: number; modelId?: string; persist?: boolean }) =>
+    post<{
+      relationships: Array<{ id: string; source: string; target: string; word: string; turn: number; createdAt: string }>;
+      draft: Array<{ source: string; target: string; word: string }>;
+      meta: { chatId: string; windowSize: number; modelId: string; providerId: string; currentTurn: number; generatedAt: string; persisted: boolean };
+      reasoning: string;
+    }>(`/memory/${chatId}/relationships/generate`, body || {}, { timeoutMs: 90_000 }),
 
   // Tags
   tagsForChat: (chatId: string) =>
@@ -268,7 +290,7 @@ export interface TagDto {
 export interface ChatSearchResultDto {
   chatId: string;
   chatTitle: string;
-  matchType: "title" | "tag";
+  matchType: "title" | "tag" | "message";
   preview: string;
   turn: number | null;
   createdAt: string;

@@ -4,6 +4,7 @@ import express from "express";
 import { existsSync, writeFileSync } from "fs";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
+import os from "os";
 import { dirname, extname, join } from "path";
 import { fileURLToPath } from "url";
 import { DATA_DIR, DEFAULT_SETTINGS, UPLOADS_DIR, db, newId } from "../db.js";
@@ -56,6 +57,46 @@ function isHeadlessPublicModeEnabled() {
   return process.env.SLV_SERVER_PUBLIC === "1";
 }
 
+/**
+ * LAN sharing mode (SLV_LAN_SHARING=1) binds the listener to 0.0.0.0 so other
+ * devices on the same Wi-Fi can reach the app. But the Origin/CORS middleware
+ * below still rejected any non-localhost Origin with a 403, which silently
+ * broke every fetch() the phone's browser made (HTML loaded fine, every
+ * /api/* call returned "Origin blocked by security policy").
+ *
+ * When LAN sharing is on, we treat the request's own resolved origin (derived
+ * from the Host header) as allowed. This is safe: it only admits same-origin
+ * requests — i.e. a page loaded from http://192.168.1.X:PORT may call
+ * /api/* on http://192.168.1.X:PORT. Cross-origin (e.g. evil.com) is still
+ * rejected unless SLV_SERVER_PUBLIC=1 + matching origin (headless public).
+ */
+function isLanSharingEnabled() {
+  return process.env.SLV_LAN_SHARING === "1";
+}
+
+function isPrivateLanOrigin(origin: string | undefined): boolean {
+  // RFC1918 + link-local + unique-local IPv6, plus localhost variants.
+  // Used to tighten LAN-sharing mode so a public IP reflected in Host can't
+  // sneak past (e.g. when the machine is also reachable from the internet).
+  if (!origin) return false;
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+    // IPv4 private ranges
+    if (/^10\./.test(host)) return true;
+    if (/^192\.168\./.test(host)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+    if (/^169\.254\./.test(host)) return true; // link-local
+    // IPv6 private / link-local
+    if (host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function resolveRequestOrigin(req: express.Request): string | null {
   const forwardedProto = typeof req.headers["x-forwarded-proto"] === "string"
     ? req.headers["x-forwarded-proto"].split(",")[0]?.trim()
@@ -72,6 +113,21 @@ function resolveRequestOrigin(req: express.Request): string | null {
 function isAllowedRequestOrigin(req: express.Request, origin: string | undefined): boolean {
   if (!origin) return true;
   if (isAllowedLocalOrigin(origin)) return true;
+  // LAN sharing mode: admit the request's own origin so the phone browser
+  // can hit /api/* after loading the page over http://<lan-ip>:<port>.
+  // We additionally require the origin to be a private LAN address, so a
+  // machine that happens to also be reachable on a public IP can't be
+  // driven by arbitrary internet callers without --allow-remote.
+  if (isLanSharingEnabled()) {
+    try {
+      const requestOrigin = resolveRequestOrigin(req);
+      if (!requestOrigin) return false;
+      if (new URL(origin).origin !== new URL(requestOrigin).origin) return false;
+      return isPrivateLanOrigin(origin);
+    } catch {
+      return false;
+    }
+  }
   if (!isHeadlessPublicModeEnabled()) return false;
   try {
     const requestOrigin = resolveRequestOrigin(req);
@@ -398,6 +454,51 @@ export function createApp() {
 
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok" });
+  });
+
+  // Returns the host's LAN-side URLs so the SettingsScreen can show the user
+  // exactly what to type into their phone when LAN sharing is on. Only returns
+  // private/RFC1918 addresses — public IPs are deliberately hidden so we don't
+  // accidentally advertise a publicly reachable address.
+  app.get("/api/lan-info", (_req, res) => {
+    const lanSharing = process.env.SLV_LAN_SHARING === "1";
+    const port = Number(process.env.SLV_SERVER_PORT) || 3001;
+    const addresses: string[] = [];
+    if (lanSharing) {
+      try {
+        const ifaces = os.networkInterfaces();
+        for (const list of Object.values(ifaces)) {
+          if (!list) continue;
+          for (const iface of list) {
+            if (iface.family !== "IPv4" && iface.family !== "IPv6") continue;
+            if (iface.internal) continue;
+            const addr = iface.address.toLowerCase();
+            // Only private ranges + link-local; never public.
+            const isPrivate =
+              /^10\./.test(addr) ||
+              /^192\.168\./.test(addr) ||
+              /^172\.(1[6-9]|2\d|3[01])\./.test(addr) ||
+              /^169\.254\./.test(addr) ||
+              addr === "::1" ||
+              addr.startsWith("fc") ||
+              addr.startsWith("fd") ||
+              addr.startsWith("fe80");
+            if (!isPrivate) continue;
+            const url = iface.family === "IPv6"
+              ? `http://[${iface.address}]:${port}`
+              : `http://${iface.address}:${port}`;
+            addresses.push(url);
+          }
+        }
+      } catch {
+        // ignore — return empty list
+      }
+    }
+    res.json({
+      lanSharing,
+      port,
+      urls: Array.from(new Set(addresses))
+    });
   });
 
   registerFrontendStatic(app);

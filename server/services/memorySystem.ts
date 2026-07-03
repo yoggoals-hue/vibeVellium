@@ -345,6 +345,42 @@ export function updateActionTreeNode(
     merged.relationships_json,
     nodeId
   );
+
+  // Keep the searchable `message_tags` and `character_relationships` tables in
+  // sync with the edited node. Without this, edited tags/relationships were
+  // saved on the node itself (so the Inspector showed them) but never reached
+  // search / relationships-list, so other parts of the app showed stale data.
+  if (patch.tags) {
+    db.prepare(
+      "DELETE FROM message_tags WHERE chat_id = ? AND turn = ? AND message_id IS NULL"
+    ).run(merged.chat_id, merged.turn);
+    if (patch.tags.length > 0) {
+      const insertTag = db.prepare(
+        "INSERT INTO message_tags (id, chat_id, message_id, tag, turn, created_at) VALUES (?, ?, NULL, ?, ?, ?)"
+      );
+      const nowStr = now();
+      for (const tag of patch.tags.slice(0, 10)) {
+        const trimmed = tag.trim().toLowerCase();
+        if (!trimmed) continue;
+        insertTag.run(newId(), merged.chat_id, trimmed, merged.turn, nowStr);
+      }
+    }
+  }
+  if (patch.relationships) {
+    db.prepare(
+      "DELETE FROM character_relationships WHERE chat_id = ? AND turn = ?"
+    ).run(merged.chat_id, merged.turn);
+    if (patch.relationships.length > 0) {
+      const insertRel = db.prepare(
+        "INSERT INTO character_relationships (id, chat_id, source_character, target_character, word, turn, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      );
+      const nowStr = now();
+      for (const rel of patch.relationships) {
+        insertRel.run(newId(), merged.chat_id, rel.source, rel.target, rel.word, merged.turn, nowStr);
+      }
+    }
+  }
+
   return parseNodeRow(merged);
 }
 
@@ -751,7 +787,7 @@ export function listAllTags(): TagRow[] {
 export interface ChatSearchResult {
   chatId: string;
   chatTitle: string;
-  matchType: "title" | "tag";
+  matchType: "title" | "tag" | "message";
   preview: string;
   turn: number | null;
   createdAt: string;
@@ -764,12 +800,18 @@ export function searchChats(query: string): ChatSearchResult[] {
   const trimmed = query.trim().toLowerCase();
   if (!trimmed) return [];
 
+  // Escape SQL LIKE wildcards so user searches containing %, _, or \ match
+  // literally instead of being interpreted as wildcards.
+  const escaped = trimmed.replace(/[%_\\]/g, (c) => "\\" + c);
+  const likePattern = `%${escaped}%`;
+  const likeEscape = "\\";
+
   const results: ChatSearchResult[] = [];
 
   // Title matches
   const titleRows = db.prepare(
-    "SELECT id, title FROM chats WHERE LOWER(title) LIKE ? ORDER BY created_at DESC LIMIT 30"
-  ).all(`%${trimmed}%`) as Array<{ id: string; title: string }>;
+    "SELECT id, title FROM chats WHERE LOWER(title) LIKE ? ESCAPE ? ORDER BY created_at DESC LIMIT 30"
+  ).all(likePattern, likeEscape) as Array<{ id: string; title: string }>;
   for (const row of titleRows) {
     results.push({
       chatId: row.id,
@@ -786,10 +828,10 @@ export function searchChats(query: string): ChatSearchResult[] {
     `SELECT mt.chat_id, mt.tag, mt.turn, mt.created_at, c.title
      FROM message_tags mt
      JOIN chats c ON c.id = mt.chat_id
-     WHERE mt.tag LIKE ?
+     WHERE mt.tag LIKE ? ESCAPE ?
      ORDER BY mt.created_at DESC
      LIMIT 50`
-  ).all(`%${trimmed}%`) as Array<{
+  ).all(likePattern, likeEscape) as Array<{
     chat_id: string;
     tag: string;
     turn: number | null;
@@ -812,10 +854,10 @@ export function searchChats(query: string): ChatSearchResult[] {
     `SELECT m.chat_id, m.content, m.created_at, c.title
      FROM messages m
      JOIN chats c ON c.id = m.chat_id
-     WHERE m.deleted = 0 AND LOWER(m.content) LIKE ?
+     WHERE m.deleted = 0 AND LOWER(m.content) LIKE ? ESCAPE ?
      ORDER BY m.created_at DESC
      LIMIT 30`
-  ).all(`%${trimmed}%`) as Array<{
+  ).all(likePattern, likeEscape) as Array<{
     chat_id: string;
     content: string;
     created_at: string;
@@ -830,7 +872,8 @@ export function searchChats(query: string): ChatSearchResult[] {
     results.push({
       chatId: row.chat_id,
       chatTitle: row.title,
-      matchType: "tag",
+      // Previously mislabeled as "tag" — body-text hits are their own kind.
+      matchType: "message",
       preview,
       turn: null,
       createdAt: row.created_at

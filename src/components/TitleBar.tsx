@@ -15,7 +15,11 @@ export function TitleBar({ children }: TitleBarProps) {
     if (!isElectron) return;
     window.electronAPI!.getPlatform().then(setPlatform);
     window.electronAPI!.isMaximized().then(setIsMaximized);
-    window.electronAPI!.onMaximizedChange(setIsMaximized);
+    const dispose = window.electronAPI!.onMaximizedChange(setIsMaximized);
+    return () => {
+      // Dispose the ipcRenderer listener on unmount — previously leaked.
+      dispose?.();
+    };
   }, [isElectron]);
 
   if (!isElectron) return null;

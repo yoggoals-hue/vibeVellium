@@ -1269,6 +1269,7 @@ export const translations = {
     "search.searching": "Searching...",
     "search.noResults": "No results found.",
     "search.typeTitle": "title",
+    "search.typeTag": "tag",
     "search.typeContent": "content",
 
     // What-if simulator

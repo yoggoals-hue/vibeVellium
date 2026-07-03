@@ -45,13 +45,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
     error?: string;
   }>,
   onMaximizedChange: (callback: (maximized: boolean) => void) => {
-    ipcRenderer.on("window:maximized", (_event, maximized: boolean) => {
+    const listener = (_event: IpcRendererEvent, maximized: boolean) => {
       callback(maximized);
-    });
+    };
+    ipcRenderer.on("window:maximized", listener);
+    // Return disposer so React useEffect cleanup can actually remove the
+    // underlying ipcRenderer listener — previously the wrapper leaked one
+    // permanent listener per SettingsScreen mount.
+    return () => ipcRenderer.removeListener("window:maximized", listener);
   },
   onManagedBackendsUpdate: (callback: (states: ManagedBackendRuntimeState[]) => void) => {
-    ipcRenderer.on("managed-backends:update", (_event, states: ManagedBackendRuntimeState[]) => {
+    const listener = (_event: IpcRendererEvent, states: ManagedBackendRuntimeState[]) => {
       callback(states);
-    });
+    };
+    ipcRenderer.on("managed-backends:update", listener);
+    return () => ipcRenderer.removeListener("managed-backends:update", listener);
   }
 });

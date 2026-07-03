@@ -273,7 +273,11 @@ export function ChatSearchModal({
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-semibold text-text-primary truncate">{r.chatTitle}</span>
                     <span className={`search-result-type is-${r.matchType}`}>
-                      {r.matchType === "title" ? t("search.typeTitle" as never) : t("search.typeContent" as never)}
+                      {r.matchType === "title"
+                        ? t("search.typeTitle" as never)
+                        : r.matchType === "tag"
+                          ? t("search.typeTag" as never)
+                          : t("search.typeContent" as never)}
                     </span>
                   </div>
                   <div className="text-[11px] text-text-tertiary truncate">{r.preview}</div>

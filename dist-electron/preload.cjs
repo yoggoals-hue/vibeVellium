@@ -33,14 +33,19 @@ import_electron.contextBridge.exposeInMainWorld("electronAPI", {
   stopManagedBackend: (backendId) => import_electron.ipcRenderer.invoke("managed-backends:stop", backendId),
   stopActiveManagedBackend: () => import_electron.ipcRenderer.invoke("managed-backends:stop-active"),
   getManagedBackendLogs: (backendId) => import_electron.ipcRenderer.invoke("managed-backends:logs", backendId),
+  restartServer: () => import_electron.ipcRenderer.invoke("server:restart"),
   onMaximizedChange: (callback) => {
-    import_electron.ipcRenderer.on("window:maximized", (_event, maximized) => {
+    const listener = (_event, maximized) => {
       callback(maximized);
-    });
+    };
+    import_electron.ipcRenderer.on("window:maximized", listener);
+    return () => import_electron.ipcRenderer.removeListener("window:maximized", listener);
   },
   onManagedBackendsUpdate: (callback) => {
-    import_electron.ipcRenderer.on("managed-backends:update", (_event, states) => {
+    const listener = (_event, states) => {
       callback(states);
-    });
+    };
+    import_electron.ipcRenderer.on("managed-backends:update", listener);
+    return () => import_electron.ipcRenderer.removeListener("managed-backends:update", listener);
   }
 });

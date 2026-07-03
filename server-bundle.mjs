@@ -2573,6 +2573,36 @@ function updateActionTreeNode(nodeId, patch) {
     merged.relationships_json,
     nodeId
   );
+  if (patch.tags) {
+    db.prepare(
+      "DELETE FROM message_tags WHERE chat_id = ? AND turn = ? AND message_id IS NULL"
+    ).run(merged.chat_id, merged.turn);
+    if (patch.tags.length > 0) {
+      const insertTag = db.prepare(
+        "INSERT INTO message_tags (id, chat_id, message_id, tag, turn, created_at) VALUES (?, ?, NULL, ?, ?, ?)"
+      );
+      const nowStr = now();
+      for (const tag of patch.tags.slice(0, 10)) {
+        const trimmed = tag.trim().toLowerCase();
+        if (!trimmed) continue;
+        insertTag.run(newId(), merged.chat_id, trimmed, merged.turn, nowStr);
+      }
+    }
+  }
+  if (patch.relationships) {
+    db.prepare(
+      "DELETE FROM character_relationships WHERE chat_id = ? AND turn = ?"
+    ).run(merged.chat_id, merged.turn);
+    if (patch.relationships.length > 0) {
+      const insertRel = db.prepare(
+        "INSERT INTO character_relationships (id, chat_id, source_character, target_character, word, turn, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      );
+      const nowStr = now();
+      for (const rel of patch.relationships) {
+        insertRel.run(newId(), merged.chat_id, rel.source, rel.target, rel.word, merged.turn, nowStr);
+      }
+    }
+  }
   return parseNodeRow(merged);
 }
 function deleteActionTreeNode(nodeId) {
@@ -2838,10 +2868,13 @@ function listAllTags() {
 function searchChats(query) {
   const trimmed = query.trim().toLowerCase();
   if (!trimmed) return [];
+  const escaped = trimmed.replace(/[%_\\]/g, (c) => "\\" + c);
+  const likePattern = `%${escaped}%`;
+  const likeEscape = "\\";
   const results = [];
   const titleRows = db.prepare(
-    "SELECT id, title FROM chats WHERE LOWER(title) LIKE ? ORDER BY created_at DESC LIMIT 30"
-  ).all(`%${trimmed}%`);
+    "SELECT id, title FROM chats WHERE LOWER(title) LIKE ? ESCAPE ? ORDER BY created_at DESC LIMIT 30"
+  ).all(likePattern, likeEscape);
   for (const row of titleRows) {
     results.push({
       chatId: row.id,
@@ -2856,10 +2889,10 @@ function searchChats(query) {
     `SELECT mt.chat_id, mt.tag, mt.turn, mt.created_at, c.title
      FROM message_tags mt
      JOIN chats c ON c.id = mt.chat_id
-     WHERE mt.tag LIKE ?
+     WHERE mt.tag LIKE ? ESCAPE ?
      ORDER BY mt.created_at DESC
      LIMIT 50`
-  ).all(`%${trimmed}%`);
+  ).all(likePattern, likeEscape);
   for (const row of tagRows) {
     results.push({
       chatId: row.chat_id,
@@ -2874,10 +2907,10 @@ function searchChats(query) {
     `SELECT m.chat_id, m.content, m.created_at, c.title
      FROM messages m
      JOIN chats c ON c.id = m.chat_id
-     WHERE m.deleted = 0 AND LOWER(m.content) LIKE ?
+     WHERE m.deleted = 0 AND LOWER(m.content) LIKE ? ESCAPE ?
      ORDER BY m.created_at DESC
      LIMIT 30`
-  ).all(`%${trimmed}%`);
+  ).all(likePattern, likeEscape);
   for (const row of msgRows) {
     const contentLower = row.content.toLowerCase();
     const idx = contentLower.indexOf(trimmed);
@@ -2887,7 +2920,8 @@ function searchChats(query) {
     results.push({
       chatId: row.chat_id,
       chatTitle: row.title,
-      matchType: "tag",
+      // Previously mislabeled as "tag" — body-text hits are their own kind.
+      matchType: "message",
       preview,
       turn: null,
       createdAt: row.created_at
@@ -3033,6 +3067,7 @@ import express from "express";
 import { existsSync as existsSync9, writeFileSync as writeFileSync4 } from "fs";
 import mammoth2 from "mammoth";
 import pdfParse from "pdf-parse";
+import os from "os";
 import { dirname as dirname6, extname as extname2, join as join8 } from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
 
@@ -14168,14 +14203,18 @@ ${bodyStateBlock}`;
           generationMeta
         }).then((assistantId2) => {
           if (assistantId2) {
-            const memResult = processPostTurnMemory({
-              chatId: params.chatId,
-              branchId: params.branchId,
-              assistantContent: fullContent,
-              characterName: params.overrideCharacterName
-            });
-            if (memResult.cleanedContent !== fullContent) {
-              updateAssistantMessageContent(assistantId2, memResult.cleanedContent, roughTokenCount(memResult.cleanedContent));
+            try {
+              const memResult = processPostTurnMemory({
+                chatId: params.chatId,
+                branchId: params.branchId,
+                assistantContent: fullContent,
+                characterName: params.overrideCharacterName
+              });
+              if (memResult.cleanedContent !== fullContent) {
+                updateAssistantMessageContent(assistantId2, memResult.cleanedContent, roughTokenCount(memResult.cleanedContent));
+              }
+            } catch (err) {
+              console.warn("[chat] post-turn memory processing failed:", err);
             }
           }
         });
@@ -15419,6 +15458,19 @@ router7.patch("/action-tree/nodes/:nodeId", (req, res) => {
   if (["pending", "success", "partial", "failed"].includes(body.outcome)) patch.outcome = body.outcome;
   if (typeof body.notes === "string") patch.notes = body.notes;
   if (typeof body.turn === "number" && Number.isFinite(body.turn)) patch.turn = body.turn;
+  if (Array.isArray(body.tags)) {
+    patch.tags = body.tags.map((t) => typeof t === "string" ? t.trim() : "").filter(Boolean).slice(0, 20);
+  }
+  if (Array.isArray(body.relationships)) {
+    patch.relationships = body.relationships.flatMap((r) => {
+      if (!r || typeof r !== "object") return [];
+      const row = r;
+      const source = typeof row.source === "string" ? row.source.trim() : "";
+      const target = typeof row.target === "string" ? row.target.trim() : "";
+      const word = typeof row.word === "string" ? row.word.trim() : "";
+      return source && target && word ? [{ source, target, word }] : [];
+    });
+  }
   const updated = updateActionTreeNode(nodeId, patch);
   if (!updated) {
     res.status(404).json({ error: "Node not found" });
@@ -15891,6 +15943,297 @@ router7.get("/search/chats", (req, res) => {
   }
   const results = searchChats(query);
   res.json({ results });
+});
+var MANUAL_GENERATE_WINDOW_DEFAULT = 15;
+var MANUAL_GENERATE_WINDOW_MAX = 60;
+function getRecentTimelineWindow(chatId, windowSize) {
+  const timeline = getTimeline(chatId, "").filter((m) => m.role === "user" || m.role === "assistant");
+  const slice = timeline.slice(-Math.max(1, Math.min(windowSize, MANUAL_GENERATE_WINDOW_MAX)));
+  return slice.map((m) => ({
+    role: m.role,
+    content: String(m.content || ""),
+    characterName: m.characterName
+  }));
+}
+function safeParseJsonObject(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+  }
+  const firstObj = trimmed.indexOf("{");
+  const lastObj = trimmed.lastIndexOf("}");
+  const firstArr = trimmed.indexOf("[");
+  const lastArr = trimmed.lastIndexOf("]");
+  const trySlice = (start, end) => {
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  };
+  let candidate = null;
+  if (firstObj >= 0) candidate = trySlice(firstObj, lastObj);
+  if (candidate === null && firstArr >= 0) candidate = trySlice(firstArr, lastArr);
+  return candidate;
+}
+router7.post("/:chatId/action-tree/generate", async (req, res) => {
+  const chatId = String(req.params.chatId || "").trim();
+  if (!chatId) {
+    res.status(400).json({ error: "chatId is required" });
+    return;
+  }
+  const body = req.body || {};
+  const windowSize = typeof body.windowSize === "number" && Number.isFinite(body.windowSize) ? Math.max(1, Math.min(MANUAL_GENERATE_WINDOW_MAX, Math.floor(body.windowSize))) : MANUAL_GENERATE_WINDOW_DEFAULT;
+  const persist = body.persist !== false;
+  const overrideModelId = typeof body.modelId === "string" && body.modelId.trim() ? body.modelId.trim() : null;
+  try {
+    const settings = getSettings();
+    const providerId = settings.activeProviderId;
+    const modelId = overrideModelId || settings.activeModel;
+    if (!providerId || !modelId) {
+      res.status(400).json({ error: "No active provider/model configured" });
+      return;
+    }
+    const provider = db.prepare("SELECT * FROM providers WHERE id = ?").get(providerId);
+    if (!provider) {
+      res.status(404).json({ error: "Provider not found" });
+      return;
+    }
+    if (settings.fullLocalMode && !isLocalhostUrl(provider.base_url)) {
+      res.status(400).json({ error: "Provider blocked by Full Local Mode" });
+      return;
+    }
+    const timeline = getRecentTimelineWindow(chatId, windowSize);
+    if (timeline.length === 0) {
+      res.status(400).json({ error: "No messages in chat to analyze" });
+      return;
+    }
+    const chat = db.prepare("SELECT current_turn FROM chats WHERE id = ?").get(chatId);
+    const currentTurn = chat?.current_turn ?? 0;
+    const transcript = timeline.map((m) => {
+      const speaker = m.role === "user" ? "User" : m.characterName || "Assistant";
+      return `${speaker}: ${m.content}`;
+    }).join("\n\n");
+    const systemPrompt = [
+      "You are an action-tree extractor for a roleplay chat.",
+      "Read the recent transcript and produce a SINGLE action-tree node that summarizes the most recent turn.",
+      "Output STRICT JSON only \u2014 no prose, no markdown fences \u2014 matching this TypeScript type:",
+      "{",
+      '  "character": string,           // who acted (the assistant character name; empty if unclear',
+      '  "actions": string[],            // 1-5 short concrete actions taken in this turn',
+      '  "dialogue": string,             // the single most representative line spoken, empty if none',
+      '  "outcome": "pending" | "success" | "partial" | "failed",',
+      '  "notes": string,                // 1 sentence of context/interpretation, empty allowed',
+      '  "tags": string[],               // 0-5 lowercase single-word tags (no #)',
+      '  "relationships": Array<{ source: string; target: string; word: string }>  // 0-5 entries; word = a 1-3 word descriptor like "fond of", "distrusts", "allied with"',
+      "}",
+      "Rules:",
+      "- Source/target in relationships MUST be character names that appear in the transcript.",
+      "- Do NOT invent characters that aren't in the transcript.",
+      "- Keep everything terse \u2014 this is for memory recall, not prose."
+    ].join("\n");
+    const apiMessages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: `Transcript (most recent ${timeline.length} messages, turn ${currentTurn}):
+
+${transcript}
+
+Produce the JSON now.` }
+    ];
+    const { unifiedGenerateText: unifiedGenerateText2 } = await Promise.resolve().then(() => (init_unifiedGeneration(), unifiedGeneration_exports));
+    const result = await unifiedGenerateText2({
+      provider: {
+        id: provider.id,
+        name: provider.name || "",
+        base_url: provider.base_url,
+        api_key_cipher: provider.api_key_cipher,
+        provider_type: provider.provider_type,
+        adapter_id: provider.adapter_id ?? null
+      },
+      modelId,
+      messages: apiMessages,
+      samplerConfig: { ...settings.samplerConfig, temperature: 0.4, maxTokens: 800 },
+      apiParamPolicy: settings.apiParamPolicy,
+      signal: void 0
+    });
+    const parsed = safeParseJsonObject(result.content || "");
+    if (!parsed || typeof parsed !== "object") {
+      res.status(502).json({
+        error: "Model did not return valid JSON",
+        raw: (result.content || "").slice(0, 1e3),
+        reasoning: result.reasoning || ""
+      });
+      return;
+    }
+    const actionsRaw = parsed.actions ?? parsed.action ?? parsed.a;
+    const actions = Array.isArray(actionsRaw) ? actionsRaw.flatMap((x) => typeof x === "string" ? [x] : x && typeof x === "object" && "description" in x && typeof x.description === "string" ? [x.description] : []) : typeof actionsRaw === "string" ? [actionsRaw] : [];
+    const dialogue = typeof parsed.dialogue === "string" ? parsed.dialogue : typeof parsed.line === "string" ? parsed.line : "";
+    const outcomeRaw = String(parsed.outcome || "").toLowerCase();
+    const outcome = ["pending", "success", "partial", "failed"].includes(outcomeRaw) ? outcomeRaw : "pending";
+    const notes = typeof parsed.notes === "string" ? parsed.notes : "";
+    const character = typeof parsed.character === "string" ? parsed.character : "";
+    const tags = Array.isArray(parsed.tags) ? parsed.tags.flatMap((x) => typeof x === "string" ? [x.trim().toLowerCase()] : []).filter(Boolean).slice(0, 10) : [];
+    const relationships = Array.isArray(parsed.relationships) ? parsed.relationships.flatMap((r) => {
+      if (!r || typeof r !== "object") return [];
+      const row = r;
+      const source = typeof row.source === "string" ? row.source.trim() : "";
+      const target = typeof row.target === "string" ? row.target.trim() : "";
+      const word = typeof row.word === "string" ? row.word.trim() : "";
+      return source && target && word ? [{ source, target, word }] : [];
+    }).slice(0, 10) : [];
+    let insertedNode = null;
+    if (persist) {
+      insertedNode = insertActionTreeNode(chatId, {
+        character,
+        actions,
+        dialogue,
+        outcome,
+        notes,
+        manual: true,
+        tags,
+        relationships
+      });
+    }
+    res.json({
+      node: insertedNode,
+      draft: { character, actions, dialogue, outcome, notes, tags, relationships },
+      meta: {
+        chatId,
+        windowSize: timeline.length,
+        modelId,
+        providerId,
+        currentTurn,
+        generatedAt: now(),
+        persisted: persist
+      },
+      reasoning: result.reasoning || ""
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Action tree generation failed";
+    res.status(500).json({ error: message });
+  }
+});
+router7.post("/:chatId/relationships/generate", async (req, res) => {
+  const chatId = String(req.params.chatId || "").trim();
+  if (!chatId) {
+    res.status(400).json({ error: "chatId is required" });
+    return;
+  }
+  const body = req.body || {};
+  const windowSize = typeof body.windowSize === "number" && Number.isFinite(body.windowSize) ? Math.max(1, Math.min(MANUAL_GENERATE_WINDOW_MAX, Math.floor(body.windowSize))) : MANUAL_GENERATE_WINDOW_DEFAULT;
+  const persist = body.persist !== false;
+  const overrideModelId = typeof body.modelId === "string" && body.modelId.trim() ? body.modelId.trim() : null;
+  try {
+    const settings = getSettings();
+    const providerId = settings.activeProviderId;
+    const modelId = overrideModelId || settings.activeModel;
+    if (!providerId || !modelId) {
+      res.status(400).json({ error: "No active provider/model configured" });
+      return;
+    }
+    const provider = db.prepare("SELECT * FROM providers WHERE id = ?").get(providerId);
+    if (!provider) {
+      res.status(404).json({ error: "Provider not found" });
+      return;
+    }
+    if (settings.fullLocalMode && !isLocalhostUrl(provider.base_url)) {
+      res.status(400).json({ error: "Provider blocked by Full Local Mode" });
+      return;
+    }
+    const timeline = getRecentTimelineWindow(chatId, windowSize);
+    if (timeline.length === 0) {
+      res.status(400).json({ error: "No messages in chat to analyze" });
+      return;
+    }
+    const chat = db.prepare("SELECT current_turn FROM chats WHERE id = ?").get(chatId);
+    const currentTurn = chat?.current_turn ?? 0;
+    const transcript = timeline.map((m) => {
+      const speaker = m.role === "user" ? "User" : m.characterName || "Assistant";
+      return `${speaker}: ${m.content}`;
+    }).join("\n\n");
+    const existingRels = listLatestRelationships(chatId);
+    const existingBlock = existingRels.length > 0 ? "\n\nCurrent known relationships (most-recent descriptor wins; you may overwrite, add, or leave unchanged):\n" + existingRels.map((r) => `- ${r.source} \u2192 ${r.target}: ${r.word} (turn ${r.turn})`).join("\n") : "";
+    const systemPrompt = [
+      "You are a relationship extractor for a roleplay chat.",
+      "Read the recent transcript and output the current state of relationships between named characters.",
+      "Output STRICT JSON only \u2014 no prose, no markdown fences \u2014 matching:",
+      '{ "relationships": Array<{ "source": string, "target": string, "word": string }> }',
+      "Rules:",
+      "- source and target MUST be character names that appear in the transcript (or in the current-relationships list).",
+      '- word is a 1-3 word descriptor like "fond of", "distrusts", "allied with", "rivals with".',
+      "- Emit at most 8 entries. Prefer the most salient relationships visible in the window.",
+      "- If a relationship from the current list still holds, include it unchanged so it persists.",
+      "- If a relationship has clearly changed, replace it with the new descriptor (same source/target).",
+      "- Do NOT invent characters that aren't in the transcript or current list."
+    ].join("\n");
+    const apiMessages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: `Transcript (most recent ${timeline.length} messages, turn ${currentTurn}):${existingBlock}
+
+${transcript}
+
+Produce the JSON now.` }
+    ];
+    const { unifiedGenerateText: unifiedGenerateText2 } = await Promise.resolve().then(() => (init_unifiedGeneration(), unifiedGeneration_exports));
+    const result = await unifiedGenerateText2({
+      provider: {
+        id: provider.id,
+        name: provider.name || "",
+        base_url: provider.base_url,
+        api_key_cipher: provider.api_key_cipher,
+        provider_type: provider.provider_type,
+        adapter_id: provider.adapter_id ?? null
+      },
+      modelId,
+      messages: apiMessages,
+      samplerConfig: { ...settings.samplerConfig, temperature: 0.4, maxTokens: 600 },
+      apiParamPolicy: settings.apiParamPolicy,
+      signal: void 0
+    });
+    const parsed = safeParseJsonObject(result.content || "");
+    const relsRaw = parsed?.relationships ?? (Array.isArray(parsed) ? parsed : []);
+    const relationships = Array.isArray(relsRaw) ? relsRaw.flatMap((r) => {
+      if (!r || typeof r !== "object") return [];
+      const row = r;
+      const source = typeof row.source === "string" ? row.source.trim() : "";
+      const target = typeof row.target === "string" ? row.target.trim() : "";
+      const word = typeof row.word === "string" ? row.word.trim() : "";
+      return source && target && word ? [{ source, target, word }] : [];
+    }).slice(0, 8) : [];
+    let insertedRels = [];
+    if (persist && relationships.length > 0) {
+      const turn = currentTurn + 1;
+      const createdAt = now();
+      const insertRel = db.prepare(
+        "INSERT INTO character_relationships (id, chat_id, source_character, target_character, word, turn, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      );
+      for (const rel of relationships) {
+        const id = newId();
+        insertRel.run(id, chatId, rel.source, rel.target, rel.word, turn, createdAt);
+        insertedRels.push({ id, source: rel.source, target: rel.target, word: rel.word, turn, createdAt });
+      }
+    }
+    res.json({
+      relationships: insertedRels,
+      draft: relationships,
+      meta: {
+        chatId,
+        windowSize: timeline.length,
+        modelId,
+        providerId,
+        currentTurn,
+        generatedAt: now(),
+        persisted: persist
+      },
+      reasoning: result.reasoning || ""
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Relationships generation failed";
+    res.status(500).json({ error: message });
+  }
 });
 router7.post("/:chatId/what-if", async (req, res) => {
   const chatId = String(req.params.chatId || "").trim();
@@ -21407,6 +21750,26 @@ function isAllowedLocalOrigin(origin) {
 function isHeadlessPublicModeEnabled() {
   return process.env.SLV_SERVER_PUBLIC === "1";
 }
+function isLanSharingEnabled() {
+  return process.env.SLV_LAN_SHARING === "1";
+}
+function isPrivateLanOrigin(origin) {
+  if (!origin) return false;
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+    if (/^10\./.test(host)) return true;
+    if (/^192\.168\./.test(host)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+    if (/^169\.254\./.test(host)) return true;
+    if (host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
 function resolveRequestOrigin(req) {
   const forwardedProto = typeof req.headers["x-forwarded-proto"] === "string" ? req.headers["x-forwarded-proto"].split(",")[0]?.trim() : null;
   const forwardedHost = typeof req.headers["x-forwarded-host"] === "string" ? req.headers["x-forwarded-host"].split(",")[0]?.trim() : null;
@@ -21418,6 +21781,16 @@ function resolveRequestOrigin(req) {
 function isAllowedRequestOrigin(req, origin) {
   if (!origin) return true;
   if (isAllowedLocalOrigin(origin)) return true;
+  if (isLanSharingEnabled()) {
+    try {
+      const requestOrigin = resolveRequestOrigin(req);
+      if (!requestOrigin) return false;
+      if (new URL(origin).origin !== new URL(requestOrigin).origin) return false;
+      return isPrivateLanOrigin(origin);
+    } catch {
+      return false;
+    }
+  }
   if (!isHeadlessPublicModeEnabled()) return false;
   try {
     const requestOrigin = resolveRequestOrigin(req);
@@ -21713,6 +22086,34 @@ function createApp() {
   app2.get("/api/health", (_req, res) => {
     res.json({ status: "ok" });
   });
+  app2.get("/api/lan-info", (_req, res) => {
+    const lanSharing = process.env.SLV_LAN_SHARING === "1";
+    const port = Number(process.env.SLV_SERVER_PORT) || 3001;
+    const addresses = [];
+    if (lanSharing) {
+      try {
+        const ifaces = os.networkInterfaces();
+        for (const list of Object.values(ifaces)) {
+          if (!list) continue;
+          for (const iface of list) {
+            if (iface.family !== "IPv4" && iface.family !== "IPv6") continue;
+            if (iface.internal) continue;
+            const addr = iface.address.toLowerCase();
+            const isPrivate = /^10\./.test(addr) || /^192\.168\./.test(addr) || /^172\.(1[6-9]|2\d|3[01])\./.test(addr) || /^169\.254\./.test(addr) || addr === "::1" || addr.startsWith("fc") || addr.startsWith("fd") || addr.startsWith("fe80");
+            if (!isPrivate) continue;
+            const url = iface.family === "IPv6" ? `http://[${iface.address}]:${port}` : `http://${iface.address}:${port}`;
+            addresses.push(url);
+          }
+        }
+      } catch {
+      }
+    }
+    res.json({
+      lanSharing,
+      port,
+      urls: Array.from(new Set(addresses))
+    });
+  });
   registerFrontendStatic(app2);
   return app2;
 }
@@ -21736,13 +22137,35 @@ function startServer(port = runtimeOptions.port, host = runtimeOptions.host) {
 }
 function stopServer() {
   return new Promise((resolve8) => {
-    if (serverInstance) {
-      serverInstance.close(() => {
-        console.log("Server stopped");
-        resolve8();
-      });
-    } else {
+    if (!serverInstance) {
       resolve8();
+      return;
+    }
+    const instance = serverInstance;
+    serverInstance = null;
+    try {
+      instance.closeAllConnections?.();
+    } catch {
+    }
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      console.log("Server stopped");
+      resolve8();
+    };
+    const timer = setTimeout(() => {
+      try {
+        instance.unref();
+      } catch {
+      }
+      finish();
+    }, 3e3);
+    try {
+      instance.close(() => finish());
+    } catch {
+      finish();
     }
   });
 }

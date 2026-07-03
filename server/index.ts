@@ -34,13 +34,45 @@ export function startServer(
 
 export function stopServer(): Promise<void> {
   return new Promise((resolve) => {
-    if (serverInstance) {
-      serverInstance.close(() => {
-        console.log("Server stopped");
-        resolve();
-      });
-    } else {
+    if (!serverInstance) {
       resolve();
+      return;
+    }
+    const instance = serverInstance;
+    serverInstance = null;
+
+    // server.close(cb) only fires once ALL keep-alive / SSE connections drain.
+    // During an active chat stream that can take 30+ seconds, leaving the
+    // "Restart server" button (e.g. after toggling LAN sharing) looking dead.
+    // Forcefully destroy open sockets first, then close the listener, and
+    // race the whole thing against a hard 3s timeout so callers never hang.
+    try {
+      // Node 18.2+ — destroys all open connections immediately.
+      (instance as HttpServer & { closeAllConnections?: () => void }).closeAllConnections?.();
+    } catch {
+      // ignore — older runtimes will fall through to the timeout below.
+    }
+
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      console.log("Server stopped");
+      resolve();
+    };
+
+    const timer = setTimeout(() => {
+      // Last resort: unref the listener so the process can exit even if a
+      // zombie socket is wedged. Better than blocking the IPC forever.
+      try { instance.unref(); } catch { /* ignore */ }
+      finish();
+    }, 3000);
+
+    try {
+      instance.close(() => finish());
+    } catch {
+      finish();
     }
   });
 }

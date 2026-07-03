@@ -230,6 +230,9 @@ function ActionTreeSection({ chatId }: { chatId: string }) {
   const [currentTurn, setCurrentTurn] = useState(0);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Partial<ActionTreeNodeDto>>({});
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generateInfo, setGenerateInfo] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -305,6 +308,34 @@ function ActionTreeSection({ chatId }: { chatId: string }) {
     });
   }
 
+  /**
+   * Manual AI extraction: send the last 15 user+assistant messages to the
+   * active provider/model and persist the resulting action-tree node. This is
+   * the user's "Generate from chat (AI)" button — it exists because most
+   * models don't natively emit <action_tree> blocks, so the auto-extraction
+   * path inside chatOrchestrator was effectively dead for them.
+   */
+  async function generateFromChat() {
+    setGenerating(true);
+    setGenerateError(null);
+    setGenerateInfo(null);
+    try {
+      const result = await memoryClient.actionTreeGenerate(chatId, { windowSize: 15 });
+      if (result.node) {
+        setNodes((prev) => [...prev, result.node as ActionTreeNodeDto]);
+        setGenerateInfo(
+          `Generated node T${result.node.turn} from last ${result.meta.windowSize} messages via ${result.meta.modelId}.`
+        );
+      } else {
+        setGenerateInfo(`Generated draft (not persisted). ${result.meta.windowSize} messages analyzed.`);
+      }
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   return (
     <div className="inspector-action-tree">
       <div className="inspector-toggle-row">
@@ -354,7 +385,23 @@ function ActionTreeSection({ chatId }: { chatId: string }) {
 
           <div className="inspector-action-row">
             <button className="inspector-btn inspector-btn-primary" onClick={addManual}>{t("actionTree.addManual" as never)}</button>
+            <button
+              className="inspector-btn"
+              onClick={() => void generateFromChat()}
+              disabled={generating}
+              title="Send the last 15 user + assistant messages to the AI and persist a new action-tree node from the JSON it returns."
+            >
+              {generating ? "Generating…" : "Generate from chat (AI)"}
+            </button>
           </div>
+          {generateInfo && (
+            <div className="inspector-form-hint" style={{ color: "var(--color-success, #16a34a)" }}>{generateInfo}</div>
+          )}
+          {generateError && (
+            <div className="inspector-form-hint" style={{ color: "var(--color-danger, #dc2626)" }}>
+              Generation failed: {generateError}
+            </div>
+          )}
 
           {nodes.length === 0 ? (
             <div className="inspector-empty">{t("actionTree.empty" as never)}</div>
@@ -1258,6 +1305,9 @@ function RelationshipsSection({ chatId }: { chatId: string }) {
   const { t } = useI18n();
   const [latest, setLatest] = useState<RelationshipDto[]>([]);
   const [recent, setRecent] = useState<RelationshipDto[]>([]);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generateInfo, setGenerateInfo] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -1273,13 +1323,78 @@ function RelationshipsSection({ chatId }: { chatId: string }) {
     void load();
   }, [load]);
 
-  if (latest.length === 0 && recent.length === 0) {
-    return <div className="inspector-empty">{t("relationships.empty" as never)}</div>;
+  /**
+   * Manual AI extraction: send the last 15 user+assistant messages to the
+   * active provider/model and persist the resulting relationship rows. The
+   * model sees the current relationships list so it can carry forward
+   * unchanged ones and overwrite changed ones in a single pass.
+   */
+  async function generateFromChat() {
+    setGenerating(true);
+    setGenerateError(null);
+    setGenerateInfo(null);
+    try {
+      const result = await memoryClient.relationshipsGenerate(chatId, { windowSize: 15 });
+      if (result.relationships.length > 0) {
+        setGenerateInfo(
+          `Generated ${result.relationships.length} relationship(s) from last ${result.meta.windowSize} messages via ${result.meta.modelId}.`
+        );
+        await load(); // refresh both latest + recent
+      } else {
+        setGenerateInfo("Model returned no relationships from the recent transcript.");
+      }
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  if (latest.length === 0 && recent.length === 0 && !generating) {
+    return (
+      <div className="inspector-relationships">
+        <div className="inspector-empty">{t("relationships.empty" as never)}</div>
+        <div className="inspector-action-row" style={{ marginTop: 8 }}>
+          <button
+            className="inspector-btn"
+            onClick={() => void generateFromChat()}
+            disabled={generating}
+            title="Send the last 15 user + assistant messages to the AI and persist the relationships JSON it returns."
+          >
+            {generating ? "Generating…" : "Generate from chat (AI)"}
+          </button>
+        </div>
+        {generateError && (
+          <div className="inspector-form-hint" style={{ color: "var(--color-danger, #dc2626)" }}>
+            Generation failed: {generateError}
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
     <div className="inspector-relationships">
       <div className="inspector-subsection-desc">{t("relationships.desc" as never)}</div>
+
+      <div className="inspector-action-row" style={{ marginBottom: 8 }}>
+        <button
+          className="inspector-btn"
+          onClick={() => void generateFromChat()}
+          disabled={generating}
+          title="Send the last 15 user + assistant messages to the AI and persist the relationships JSON it returns."
+        >
+          {generating ? "Generating…" : "Generate from chat (AI)"}
+        </button>
+      </div>
+      {generateInfo && (
+        <div className="inspector-form-hint" style={{ color: "var(--color-success, #16a34a)", marginBottom: 8 }}>{generateInfo}</div>
+      )}
+      {generateError && (
+        <div className="inspector-form-hint" style={{ color: "var(--color-danger, #dc2626)", marginBottom: 8 }}>
+          Generation failed: {generateError}
+        </div>
+      )}
 
       {latest.length > 0 && (
         <div className="inspector-subsection">

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isPluginDevAutoRefreshEnabled, PluginSlotMount, setPluginDevAutoRefreshEnabled, usePlugins } from "../plugins/PluginHost";
 import { api } from "../../shared/api";
+import { get as apiGet } from "../../shared/api/core";
 import { useI18n } from "../../shared/i18n";
 import { triggerBlobDownload } from "../../shared/download";
 import { PROVIDER_PRESETS, type ProviderPreset } from "../../shared/providerPresets";
@@ -127,6 +128,7 @@ export function SettingsScreen({
   const [managedBackendStates, setManagedBackendStates] = useState<ManagedBackendRuntimeState[]>([]);
   const [managedBackendLogsFor, setManagedBackendLogsFor] = useState<ManagedBackendConfig | null>(null);
   const [managedBackendLogs, setManagedBackendLogs] = useState<ManagedBackendLogEntry[]>([]);
+  const [lanInfo, setLanInfo] = useState<{ lanSharing: boolean; port: number; urls: string[] } | null>(null);
   const [selectedProviderId, setSelectedProviderId] = useState("");
   const [selectedModelId, setSelectedModelId] = useState("");
 
@@ -252,13 +254,32 @@ export function SettingsScreen({
     void window.electronAPI.listManagedBackends().then((states) => {
       if (active) setManagedBackendStates(states);
     }).catch(() => {});
-    window.electronAPI.onManagedBackendsUpdate?.((states) => {
+    // Capture the disposer returned by the preload wrapper so cleanup can
+    // actually remove the ipcRenderer listener — otherwise every mount of
+    // SettingsScreen leaked one permanent listener.
+    const dispose = window.electronAPI.onManagedBackendsUpdate?.((states) => {
       if (active) setManagedBackendStates(states);
     });
     return () => {
       active = false;
+      dispose?.();
     };
   }, []);
+
+  // Fetch the host's LAN URLs whenever LAN sharing is toggled on (or after a
+  // server restart) so we can show the user what to type into their phone.
+  // The endpoint returns [] when LAN sharing is off, so a stale fetch is harmless.
+  useEffect(() => {
+    if (!settings?.lanSharing) {
+      setLanInfo(null);
+      return;
+    }
+    let active = true;
+    void apiGet<{ lanSharing: boolean; port: number; urls: string[] }>("/lan-info")
+      .then((data) => { if (active) setLanInfo(data); })
+      .catch(() => { if (active) setLanInfo(null); });
+    return () => { active = false; };
+  }, [settings?.lanSharing, settings?.serverPort]);
 
   useEffect(() => {
     if (!managedBackendLogsFor || !window.electronAPI?.getManagedBackendLogs) return;
@@ -489,8 +510,19 @@ export function SettingsScreen({
       try {
         const result = await window.electronAPI.restartServer();
         if (result?.ok) {
-          const bind = result.lanSharing ? "0.0.0.0" : "127.0.0.1";
-          showResult(`Server restarted on ${bind}:${result.port}`, "success");
+          // After a successful rebind, re-fetch LAN URLs so the info panel
+          // below the toggle reflects the new state immediately.
+          if (next.lanSharing === true || ("lanSharing" in next && next.lanSharing !== undefined)) {
+            try {
+              const data = await apiGet<{ lanSharing: boolean; port: number; urls: string[] }>("/lan-info");
+              setLanInfo(data);
+            } catch { /* ignore */ }
+          }
+          if (result.lanSharing) {
+            showResult(`Server restarted — now reachable from your phone over Wi-Fi/LAN on port ${result.port}. See the address list below.`, "success");
+          } else {
+            showResult(`Server restarted on 127.0.0.1:${result.port} (LAN sharing off).`, "success");
+          }
         } else {
           showResult(
             `Settings saved, but server restart failed: ${result?.error || "unknown error"}. Please quit and relaunch the app.`,
@@ -1589,6 +1621,32 @@ export function SettingsScreen({
                       </div>
                       <ToggleSwitch checked={settings.lanSharing === true} onChange={(e) => patchRuntimeSetting({ lanSharing: e.target.checked })} />
                     </div>
+                    {settings.lanSharing === true && (
+                      <div className={`${insetPanelClass} px-3 py-2.5 text-[11px] leading-relaxed text-text-tertiary`}>
+                        <div className="font-medium text-text-secondary mb-1">Reach this app from your phone at:</div>
+                        {lanInfo && lanInfo.urls.length > 0 ? (
+                          <ul className="space-y-1">
+                            {lanInfo.urls.map((url) => (
+                              <li key={url} className="flex items-center gap-2">
+                                <code className="rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-primary select-all">{url}</code>
+                                <button
+                                  type="button"
+                                  className="text-[10px] text-text-tertiary hover:text-text-primary underline"
+                                  onClick={() => { try { void navigator.clipboard?.writeText(url); } catch { /* ignore */ } }}
+                                >copy</button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="text-[11px] text-text-tertiary">
+                            {lanInfo ? "No private LAN interfaces detected — server still re-binds to 0.0.0.0." : "Loading LAN addresses…"}
+                          </div>
+                        )}
+                        <div className="mt-1.5 text-[10px] text-text-tertiary">
+                          Only private Wi-Fi/LAN addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x) are exposed. Cross-origin requests are still blocked.
+                        </div>
+                      </div>
+                    )}
                     <div className="space-y-1.5">
                       <FieldLabel>{t("settings.serverPort")}</FieldLabel>
                       <input

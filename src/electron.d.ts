@@ -37,8 +37,8 @@ export interface ElectronAPI {
     url?: string;
     error?: string;
   }>;
-  onMaximizedChange: (callback: (maximized: boolean) => void) => void;
-  onManagedBackendsUpdate: (callback: (states: ManagedBackendRuntimeState[]) => void) => void;
+  onMaximizedChange: (callback: (maximized: boolean) => void) => (() => void);
+  onManagedBackendsUpdate: (callback: (states: ManagedBackendRuntimeState[]) => void) => (() => void);
 }
 
 export type DesktopPetChatsPayload = {

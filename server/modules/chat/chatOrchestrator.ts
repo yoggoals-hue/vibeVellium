@@ -716,14 +716,23 @@ export async function streamLlmResponse(params: {
           generationMeta
         }).then((assistantId) => {
           if (assistantId) {
-            const memResult = processPostTurnMemory({
-              chatId: params.chatId,
-              branchId: params.branchId,
-              assistantContent: fullContent,
-              characterName: params.overrideCharacterName
-            });
-            if (memResult.cleanedContent !== fullContent) {
-              updateAssistantMessageContent(assistantId, memResult.cleanedContent, roughTokenCount(memResult.cleanedContent));
+            // Memory post-processing is best-effort but MUST complete before
+            // we tell the client "done", otherwise:
+            //   - the next request can read a stale current_turn
+            //   - <action_tree> blocks are still in the stored message
+            //   - any throw inside becomes an unhandled rejection
+            try {
+              const memResult = processPostTurnMemory({
+                chatId: params.chatId,
+                branchId: params.branchId,
+                assistantContent: fullContent,
+                characterName: params.overrideCharacterName
+              });
+              if (memResult.cleanedContent !== fullContent) {
+                updateAssistantMessageContent(assistantId, memResult.cleanedContent, roughTokenCount(memResult.cleanedContent));
+              }
+            } catch (err) {
+              console.warn("[chat] post-turn memory processing failed:", err);
             }
           }
         });
