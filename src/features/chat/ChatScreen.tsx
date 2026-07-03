@@ -2353,136 +2353,115 @@ export function ChatScreen() {
                           </select>
                         )}
                       </div>
-                      <div className="mt-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-                            {t("chat.model")}
+                      {modelPanelCollapsed ? (
+                        <button
+                          type="button"
+                          onClick={() => setModelPanelCollapsed(false)}
+                          className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border-subtle bg-bg-secondary px-2.5 py-1 text-[11px] font-medium text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                          title="Expand model panel"
+                          aria-expanded={false}
+                          aria-label="Expand model panel"
+                        >
+                          <svg className="h-3 w-3 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                          </svg>
+                          <span className="max-w-[220px] truncate">
+                            {activeModelLabel || t("chat.selectModel")}
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => setModelPanelCollapsed((prev) => !prev)}
-                            className="flex items-center gap-1 rounded-md border border-border-subtle bg-bg-secondary px-2 py-0.5 text-[10px] font-medium text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-                            title={modelPanelCollapsed ? "Expand model panel" : "Collapse model panel"}
-                            aria-expanded={!modelPanelCollapsed}
-                            aria-label={modelPanelCollapsed ? "Expand model panel" : "Collapse model panel"}
-                          >
-                            <span>{modelPanelCollapsed ? "Expand" : "Collapse"}</span>
-                            <svg
-                              className={`h-3 w-3 transition-transform ${modelPanelCollapsed ? "" : "rotate-180"}`}
-                              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-                            >
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                            </svg>
-                          </button>
-                        </div>
-
-                        {modelPanelCollapsed ? (
-                          // Compact one-row form: provider + model + mode + apply,
-                          // no labels, minimal padding. Designed to take ~1 line
-                          // of vertical space instead of the 3-row grid above.
-                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                            <select
-                              value={chatProviderId}
-                              onChange={(e) => setChatProviderId(e.target.value)}
-                              className="min-w-[120px] max-w-[200px] flex-1 rounded-md border border-border bg-bg-secondary px-2 py-1 text-[11px] text-text-primary"
-                              title={t("settings.provider")}
-                            >
-                              <option value="">{t("settings.selectProvider")}</option>
-                              {providers.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
-                            </select>
-                            <select
-                              value={chatModelId}
-                              onChange={(e) => setChatModelId(e.target.value)}
-                              className="min-w-[140px] max-w-[260px] flex-[1.4] rounded-md border border-border bg-bg-secondary px-2 py-1 text-[11px] text-text-primary"
-                              title={t("chat.model")}
-                            >
-                              <option value="">{t("settings.selectModel")}</option>
-                              {models.map((m) => (<option key={m.id} value={m.id}>{m.label || m.id}</option>))}
-                            </select>
-                            <select
-                              value={chatMode}
-                              onChange={(e) => setChatMode(e.target.value as ChatMode)}
-                              className="rounded-md border border-border bg-bg-secondary px-2 py-1 text-[11px] text-text-primary"
-                              title={t("inspector.chatMode")}
-                            >
-                              <option value="rp">{t("inspector.modeRp")}</option>
-                              <option value="light_rp">{t("inspector.modeLightRp")}</option>
-                              <option value="pure_chat">{t("inspector.modePureChat")}</option>
-                            </select>
-                            <button
-                              onClick={() => { void applyModelFromChat(); }}
-                              disabled={!chatProviderId || !chatModelId}
-                              className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-text-inverse hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              {t("chat.ok")}
-                            </button>
-                          </div>
-                        ) : (
-                          // Full 4-column grid with labels (default — same as before).
-                          <div className="mt-2 grid gap-2 xl:grid-cols-[minmax(180px,1fr)_minmax(240px,1.2fr)_160px_auto]">
-                            <div>
-                              <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">{t("settings.provider")}</label>
-                              <select
-                                value={chatProviderId}
-                                onChange={(e) => setChatProviderId(e.target.value)}
-                                className="w-full rounded-lg border border-border bg-bg-secondary px-3 py-2 text-xs text-text-primary"
-                              >
-                                <option value="">{t("settings.selectProvider")}</option>
-                                {providers.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
-                              </select>
-                            </div>
-                            <div>
-                              <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">{t("chat.model")}</label>
-                              <select
-                                value={chatModelId}
-                                onChange={(e) => setChatModelId(e.target.value)}
-                                className="w-full rounded-lg border border-border bg-bg-secondary px-3 py-2 text-xs text-text-primary"
-                              >
-                                <option value="">{t("settings.selectModel")}</option>
-                                {models.map((m) => (<option key={m.id} value={m.id}>{m.label || m.id}</option>))}
-                              </select>
-                            </div>
-                            <div>
-                              <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">{t("inspector.chatMode")}</label>
-                              <select
-                                value={chatMode}
-                                onChange={(e) => setChatMode(e.target.value as ChatMode)}
-                                className="w-full rounded-lg border border-border bg-bg-secondary px-3 py-2 text-xs text-text-primary"
-                              >
-                                <option value="rp">{t("inspector.modeRp")}</option>
-                                <option value="light_rp">{t("inspector.modeLightRp")}</option>
-                                <option value="pure_chat">{t("inspector.modePureChat")}</option>
-                              </select>
-                            </div>
-                            <div className="flex items-end">
+                          {loadingModels && <span className="text-[9px] text-text-tertiary">…</span>}
+                          {chatMode === "light_rp" && (
+                            <span className="rounded bg-bg-tertiary px-1 text-[9px] text-text-tertiary">light</span>
+                          )}
+                        </button>
+                      ) : (
+                        <>
+                          <div className="mt-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
+                                {t("chat.model")}
+                              </span>
                               <button
-                                onClick={() => { void applyModelFromChat(); }}
-                                disabled={!chatProviderId || !chatModelId}
-                                className="w-full rounded-lg bg-accent px-3 py-2 text-[11px] font-semibold text-text-inverse hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+                                type="button"
+                                onClick={() => setModelPanelCollapsed(true)}
+                                className="flex items-center gap-1 rounded-md border border-border-subtle bg-bg-secondary px-2 py-0.5 text-[10px] font-medium text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                                title="Collapse model panel"
+                                aria-expanded={true}
+                                aria-label="Collapse model panel"
                               >
-                                {t("chat.ok")}
+                                <span>Collapse</span>
+                                <svg
+                                  className="h-3 w-3 rotate-180 transition-transform"
+                                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                                >
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                                </svg>
                               </button>
                             </div>
+                            <div className="mt-2 grid gap-2 xl:grid-cols-[minmax(180px,1fr)_minmax(240px,1.2fr)_160px_auto]">
+                              <div>
+                                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">{t("settings.provider")}</label>
+                                <select
+                                  value={chatProviderId}
+                                  onChange={(e) => setChatProviderId(e.target.value)}
+                                  className="w-full rounded-lg border border-border bg-bg-secondary px-3 py-2 text-xs text-text-primary"
+                                >
+                                  <option value="">{t("settings.selectProvider")}</option>
+                                  {providers.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">{t("chat.model")}</label>
+                                <select
+                                  value={chatModelId}
+                                  onChange={(e) => setChatModelId(e.target.value)}
+                                  className="w-full rounded-lg border border-border bg-bg-secondary px-3 py-2 text-xs text-text-primary"
+                                >
+                                  <option value="">{t("settings.selectModel")}</option>
+                                  {models.map((m) => (<option key={m.id} value={m.id}>{m.label || m.id}</option>))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">{t("inspector.chatMode")}</label>
+                                <select
+                                  value={chatMode}
+                                  onChange={(e) => setChatMode(e.target.value as ChatMode)}
+                                  className="w-full rounded-lg border border-border bg-bg-secondary px-3 py-2 text-xs text-text-primary"
+                                >
+                                  <option value="rp">{t("inspector.modeRp")}</option>
+                                  <option value="light_rp">{t("inspector.modeLightRp")}</option>
+                                  <option value="pure_chat">{t("inspector.modePureChat")}</option>
+                                </select>
+                              </div>
+                              <div className="flex items-end">
+                                <button
+                                  onClick={() => { void applyModelFromChat(); }}
+                                  disabled={!chatProviderId || !chatModelId}
+                                  className="w-full rounded-lg bg-accent px-3 py-2 text-[11px] font-semibold text-text-inverse hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  {t("chat.ok")}
+                                </button>
+                              </div>
+                            </div>
                           </div>
-                        )}
-                      </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-text-tertiary">
-                        {activeModelLabel ? (
-                          <span className="inline-flex items-center gap-1.5 rounded-full border border-success/20 bg-success/10 px-2 py-1 text-success">
-                            <span className="h-1.5 w-1.5 rounded-full bg-success" />
-                            {activeModelLabel}
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1.5 rounded-full border border-warning/20 bg-warning/10 px-2 py-1 text-warning">
-                            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                            </svg>
-                            {t("chat.noModel")}
-                          </span>
-                        )}
-                        {loadingModels && <span>{t("chat.loading")}</span>}
-                        {chatMode === "light_rp" && <span>{t("inspector.modeLightRpHint")}</span>}
-                      </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-text-tertiary">
+                            {activeModelLabel ? (
+                              <span className="inline-flex items-center gap-1.5 rounded-full border border-success/20 bg-success/10 px-2 py-1 text-success">
+                                <span className="h-1.5 w-1.5 rounded-full bg-success" />
+                                {activeModelLabel}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 rounded-full border border-warning/20 bg-warning/10 px-2 py-1 text-warning">
+                                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                                </svg>
+                                {t("chat.noModel")}
+                              </span>
+                            )}
+                            {loadingModels && <span>{t("chat.loading")}</span>}
+                            {chatMode === "light_rp" && <span>{t("inspector.modeLightRpHint")}</span>}
+                          </div>
+                        </>
+                      )}
                     </div>
                     <div className="flex flex-wrap items-center justify-end gap-1.5">
                       {chatGenerationBusy && (
