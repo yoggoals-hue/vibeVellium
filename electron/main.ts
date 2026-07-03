@@ -98,6 +98,12 @@ function resolveSettingsDbPath(): string | null {
  * argv + env, and the LAN Sharing toggle in the UI never reaches the listener.
  */
 function readPersistedRuntimeSettings(): { lanSharing?: boolean; serverPort?: number; enableServer?: boolean } {
+  // Reset the failure flag on every call — only set it to "1" if THIS call
+  // actually fails. The bundled server reads it in startServer() to decide
+  // whether to fall back to reading the SQLite DB itself (which it can do
+  // reliably, since the server bundle uses the real better-sqlite3 from
+  // node_modules, not the one bundled into dist-electron/main.cjs).
+  process.env.SLV_DB_READ_FAILED = "0";
   const dbPath = resolveSettingsDbPath();
   if (!dbPath) return {};
   try {
@@ -119,6 +125,12 @@ function readPersistedRuntimeSettings(): { lanSharing?: boolean; serverPort?: nu
     }
   } catch (error) {
     console.warn("[vellium] Failed to read persisted runtime settings:", error);
+    // Signal to the bundled server that we couldn't read the DB from the
+    // Electron main. The server's startServer() will read the DB itself as a
+    // fallback (it has a working better-sqlite3). This is the key fix for the
+    // `bindings` package failure in packaged builds where better-sqlite3 is
+    // bundled into main.cjs — see the comment in syncRuntimeOptionsFromDb().
+    process.env.SLV_DB_READ_FAILED = "1";
     return {};
   }
 }
@@ -131,9 +143,22 @@ function readPersistedRuntimeSettings(): { lanSharing?: boolean; serverPort?: nu
  */
 function syncRuntimeOptionsFromDb(): void {
   const persisted = readPersistedRuntimeSettings();
+  // CLI-explicit lanSharing=true (--lan-sharing, or --host 0.0.0.0/--host ::
+  // with --allow-remote, which parseServerRuntimeOptions() promotes to
+  // lanSharing=true) must take precedence over a stale `false` in the DB.
+  // Otherwise `--headless --allow-remote --host 0.0.0.0` would be silently
+  // downgraded back to lanSharing=false because the DB still holds the
+  // default `false` from a prior non-headless session. The DB value only
+  // wins when the CLI didn't already opt in.
+  //
+  // (When readPersistedRuntimeSettings() fails — e.g. the `bindings` bug in
+  // a packaged build before the package.json esbuild --external:better-sqlite3
+  // fix is rebuilt — persisted.lanSharing is undefined, so we fall back to
+  // runtimeOptions.lanSharing here, AND startServer() in the bundled server
+  // re-reads the DB itself as a second-line fallback.)
   const merged: ServerRuntimeOptions = {
     ...runtimeOptions,
-    lanSharing: persisted.lanSharing ?? runtimeOptions.lanSharing,
+    lanSharing: runtimeOptions.lanSharing || persisted.lanSharing === true,
     port: persisted.serverPort ?? runtimeOptions.port,
     enableServer: persisted.enableServer ?? runtimeOptions.enableServer
   };
@@ -2436,11 +2461,15 @@ ipcMain.handle("server:restart", async () => {
     await startProductionServer();
     await waitForServerReady();
 
+    // Re-read SLV_LAN_SHARING from the env (rather than runtimeOptions.lanSharing)
+    // because startServer()'s DB-backed fallback may have just updated it after
+    // the Electron main's readPersistedRuntimeSettings() failed. This keeps the
+    // toast the renderer shows accurate ("LAN sharing on" vs "off").
     return {
       ok: true,
       host: SERVER_HOST,
       port: SERVER_PORT,
-      lanSharing: runtimeOptions.lanSharing,
+      lanSharing: process.env.SLV_LAN_SHARING === "1",
       url: formatServerUrl({ host: SERVER_HOST, port: SERVER_PORT })
     };
   } catch (error) {

@@ -98,6 +98,16 @@ export function parseServerRuntimeOptions(
     serveStatic = true;
   }
 
+  // If the user explicitly asked for a wildcard bind (--host 0.0.0.0 or ::)
+  // AND passed --allow-remote, treat it as lanSharing=true so the rest of the
+  // system (log message, /api/lan-info, CORS middleware, UI status) reflects
+  // the actual bind. Without this, `--headless --allow-remote --host 0.0.0.0`
+  // would bind to 0.0.0.0 but report lanSharing=false, confusing users into
+  // thinking LAN sharing is off.
+  if (allowRemote && (host === "0.0.0.0" || host === "::")) {
+    lanSharing = true;
+  }
+
   const fallbackPort = serveStatic ? 3001 : 3002;
   const port = parsePort(requestedPort, fallbackPort);
 
