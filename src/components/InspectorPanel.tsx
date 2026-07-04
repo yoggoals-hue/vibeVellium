@@ -12,6 +12,7 @@ import {
   memoryClient,
   type ActionTreeNodeDto,
   type ActionTreeConfigDto,
+  type BodyStateCharacterDto,
   type BodyStateConfigDto,
   type BodyStateMeterDto,
   type FreeWillConfigDto,
@@ -223,7 +224,7 @@ function MemorySection({ chatId }: { chatId: string }) {
   );
 }
 
-function ActionTreeSection({ chatId }: { chatId: string }) {
+function ActionTreeSection({ chatId, branchId }: { chatId: string; branchId?: string | null }) {
   const { t } = useI18n();
   const [nodes, setNodes] = useState<ActionTreeNodeDto[]>([]);
   const [config, setConfig] = useState<ActionTreeConfigDto | null>(null);
@@ -320,7 +321,7 @@ function ActionTreeSection({ chatId }: { chatId: string }) {
     setGenerateError(null);
     setGenerateInfo(null);
     try {
-      const result = await memoryClient.actionTreeGenerate(chatId, { windowSize: 15 });
+      const result = await memoryClient.actionTreeGenerate(chatId, { windowSize: 15, branchId: branchId || undefined });
       if (result.node) {
         setNodes((prev) => [...prev, result.node as ActionTreeNodeDto]);
         setGenerateInfo(
@@ -1124,6 +1125,7 @@ function BodyStateSection({ chatId }: { chatId: string }) {
   const { t } = useI18n();
   const [config, setConfig] = useState<BodyStateConfigDto | null>(null);
   const [meters, setMeters] = useState<BodyStateMeterDto[]>([]);
+  const [characters, setCharacters] = useState<BodyStateCharacterDto[]>([]);
   const [editingValues, setEditingValues] = useState<Record<string, number>>({});
 
   const load = useCallback(async () => {
@@ -1131,6 +1133,7 @@ function BodyStateSection({ chatId }: { chatId: string }) {
       const data = await memoryClient.bodyStateGet(chatId);
       setConfig(data.config);
       setMeters(data.meters);
+      setCharacters(data.characters || []);
       const initialEdits: Record<string, number> = {};
       for (const m of data.meters) {
         initialEdits[`${m.characterId}:${m.meter}`] = m.value;
@@ -1195,6 +1198,21 @@ function BodyStateSection({ chatId }: { chatId: string }) {
     return acc;
   }, {});
 
+  // Build a lookup from characterId → { name, isPrimary } so we can show
+  // the character's display name (instead of a truncated UUID) and mark
+  // the chat's primary character. This is the fix for "body state fails to
+  // identify currently active character" — previously the group label was
+  // `charId.slice(0, 8)` which is just the first 8 chars of a UUID and
+  // tells the user nothing about which character the meters belong to.
+  const charInfoById = new Map(characters.map((c) => [c.id, c]));
+  function resolveCharLabel(charId: string): { name: string; isPrimary: boolean } {
+    const info = charInfoById.get(charId);
+    return {
+      name: info?.name || `Character ${charId.slice(0, 8)}`,
+      isPrimary: info?.isPrimary ?? false
+    };
+  }
+
   return (
     <div className="inspector-body-state">
       <div className="inspector-toggle-row">
@@ -1248,9 +1266,21 @@ function BodyStateSection({ chatId }: { chatId: string }) {
             <div className="inspector-empty">{t("bodyState.noMeters" as never)}</div>
           ) : (
             <div className="inspector-meters-list">
-              {Object.entries(metersByChar).map(([charId, charMeters]) => (
+              {Object.entries(metersByChar).map(([charId, charMeters]) => {
+                const { name: charName, isPrimary } = resolveCharLabel(charId);
+                return (
                 <div key={charId} className="inspector-meter-group">
-                  <div className="inspector-meter-group-label">{charId.slice(0, 8)}</div>
+                  <div className="inspector-meter-group-label">
+                    {charName}
+                    {isPrimary && (
+                      <span
+                        className="inspector-meter-primary-badge"
+                        title="Primary character for this chat"
+                      >
+                        primary
+                      </span>
+                    )}
+                  </div>
                   {charMeters.map((m) => {
                     const key = `${m.characterId}:${m.meter}`;
                     const value = editingValues[key] ?? m.value;
@@ -1288,7 +1318,8 @@ function BodyStateSection({ chatId }: { chatId: string }) {
                     );
                   })}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </>
@@ -1301,7 +1332,7 @@ function BodyStateSection({ chatId }: { chatId: string }) {
 // Relationships section
 // --------------------------------------------------------------------------
 
-function RelationshipsSection({ chatId }: { chatId: string }) {
+function RelationshipsSection({ chatId, branchId }: { chatId: string; branchId?: string | null }) {
   const { t } = useI18n();
   const [latest, setLatest] = useState<RelationshipDto[]>([]);
   const [recent, setRecent] = useState<RelationshipDto[]>([]);
@@ -1334,7 +1365,7 @@ function RelationshipsSection({ chatId }: { chatId: string }) {
     setGenerateError(null);
     setGenerateInfo(null);
     try {
-      const result = await memoryClient.relationshipsGenerate(chatId, { windowSize: 15 });
+      const result = await memoryClient.relationshipsGenerate(chatId, { windowSize: 15, branchId: branchId || undefined });
       if (result.relationships.length > 0) {
         setGenerateInfo(
           `Generated ${result.relationships.length} relationship(s) from last ${result.meta.windowSize} messages via ${result.meta.modelId}.`
@@ -1475,7 +1506,7 @@ export function InspectorPanel({ open, onClose, chatId, branchId }: InspectorPan
         </Section>
 
         <Section title={t("inspector.sectionActionTree" as never)}>
-          <ActionTreeSection chatId={chatId} />
+          <ActionTreeSection chatId={chatId} branchId={branchId} />
         </Section>
 
         <Section title={t("inspector.sectionFutureGuides" as never)}>
@@ -1491,7 +1522,7 @@ export function InspectorPanel({ open, onClose, chatId, branchId }: InspectorPan
         </Section>
 
         <Section title={t("inspector.sectionRelationships" as never)}>
-          <RelationshipsSection chatId={chatId} />
+          <RelationshipsSection chatId={chatId} branchId={branchId} />
         </Section>
       </>
     );

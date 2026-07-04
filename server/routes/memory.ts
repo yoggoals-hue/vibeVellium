@@ -38,6 +38,7 @@ import {
   setBodyStateConfig,
   setBodyStateMeter,
   setFreeWillConfig,
+  ensureBodyStateMetersForCharacter,
   type BodyStateConfig,
   type BodyStateMeter,
   type FreeWillConfig,
@@ -47,7 +48,7 @@ import {
 import { buildSystemPrompt, buildMessageArray, buildMultiCharSystemPrompt, buildMultiCharMessageArray, mergeConsecutiveRoles } from "../domain/rpEngine.js";
 import { getTriggeredLoreEntries, injectLoreBlocks } from "../domain/lorebooks.js";
 import { getAuthorNote, getChatSamplerConfig, getCharacterCard, getLorebookEntries, getSceneState } from "../modules/chat/promptContext.js";
-import { getPromptBlocks, getSettings, getTimeline, type ProviderRow, type UserPersonaPayload } from "../modules/chat/routeHelpers.js";
+import { getPromptBlocks, getSettings, getTimeline, resolveBranch, type ProviderRow, type UserPersonaPayload } from "../modules/chat/routeHelpers.js";
 import { resolveLorebookIds } from "../modules/chat/attachments.js";
 import { retrieveRagContext } from "../services/rag.js";
 
@@ -594,8 +595,66 @@ router.get("/:chatId/body-state", (req, res) => {
     return;
   }
   const config = getBodyStateConfig(chatId);
+
+  // BUGFIX: previously this endpoint only returned meters that already
+  // existed in the body_state_meters table. Meters are normally created
+  // lazily during chat generation (via ensureBodyStateMetersForCharacter),
+  // so when a user opened the inspector for a chat that hadn't generated
+  // a reply since body state was enabled, the section showed "no meters"
+  // even though characters were linked to the chat. We now proactively
+  // ensure meters exist for every character linked to the chat whenever
+  // body state is enabled — this makes the "active character" immediately
+  // visible in the inspector without requiring a generation round-trip.
+  //
+  // We also resolve character IDs to names and mark the primary character
+  // so the UI can show "Mitsuri Kanroji" instead of "a1b2c3d4".
+  const chatRow = db.prepare("SELECT character_id, character_ids FROM chats WHERE id = ?").get(chatId) as {
+    character_id: string | null;
+    character_ids: string | null;
+  } | undefined;
+
+  const primaryCharacterId = chatRow?.character_id || null;
+  let linkedCharacterIds: string[] = [];
+  try {
+    const parsed = JSON.parse(chatRow?.character_ids || "[]");
+    if (Array.isArray(parsed)) {
+      linkedCharacterIds = parsed.flatMap((x) => (typeof x === "string" && x.trim() ? [x.trim()] : []));
+    }
+  } catch {
+    // ignore malformed JSON
+  }
+  if (primaryCharacterId && !linkedCharacterIds.includes(primaryCharacterId)) {
+    linkedCharacterIds.unshift(primaryCharacterId);
+  }
+
+  // Auto-create default meters (value 50, unlocked) for every linked
+  // character — but only when body state is enabled, so we don't
+  // pollute the table for users who never turned the feature on.
+  if (config.enabled) {
+    for (const charId of linkedCharacterIds) {
+      try {
+        ensureBodyStateMetersForCharacter(chatId, charId);
+      } catch {
+        // best-effort — don't fail the whole request if one character fails
+      }
+    }
+  }
+
   const meters = listBodyStateMeters(chatId);
-  res.json({ config, meters });
+
+  // Resolve character names for the UI. We look up each character's name
+  // from the characters table so the inspector can display a human-readable
+  // label instead of a truncated UUID.
+  const characters = linkedCharacterIds.map((id) => {
+    const nameRow = db.prepare("SELECT name FROM characters WHERE id = ?").get(id) as { name: string } | undefined;
+    return {
+      id,
+      name: nameRow?.name || `Character ${id.slice(0, 8)}`,
+      isPrimary: id === primaryCharacterId
+    };
+  });
+
+  res.json({ config, meters, characters });
 });
 
 router.put("/:chatId/body-state/config", (req, res) => {
@@ -713,8 +772,16 @@ router.get("/search/chats", (req, res) => {
 const MANUAL_GENERATE_WINDOW_DEFAULT = 15;
 const MANUAL_GENERATE_WINDOW_MAX = 60;
 
-function getRecentTimelineWindow(chatId: string, windowSize: number): Array<{ role: string; content: string; characterName: string | null }> {
-  const timeline = getTimeline(chatId, "").filter((m) => m.role === "user" || m.role === "assistant");
+function getRecentTimelineWindow(chatId: string, windowSize: number, branchId?: string): Array<{ role: string; content: string; characterName: string | null }> {
+  // BUGFIX: previously this called getTimeline(chatId, "") with an empty
+  // branch id. The messages table stores branch_id as a UUID, so the query
+  // `WHERE branch_id = ""` matched ZERO rows — which is why the "Generate
+  // from chat (AI)" buttons for action-tree and relationships always failed
+  // with "No messages in chat to analyze" even when the chat had hundreds
+  // of messages. We now resolve the chat's main branch (or use the caller-
+  // supplied branchId) so the actual message history is read.
+  const resolvedBranchId = branchId || resolveBranch(chatId);
+  const timeline = getTimeline(chatId, resolvedBranchId).filter((m) => m.role === "user" || m.role === "assistant");
   const slice = timeline.slice(-Math.max(1, Math.min(windowSize, MANUAL_GENERATE_WINDOW_MAX)));
   return slice.map((m) => ({
     role: m.role,
@@ -756,6 +823,7 @@ router.post("/:chatId/action-tree/generate", async (req, res) => {
     : MANUAL_GENERATE_WINDOW_DEFAULT;
   const persist = body.persist !== false; // default true
   const overrideModelId = typeof body.modelId === "string" && body.modelId.trim() ? body.modelId.trim() : null;
+  const branchId = typeof body.branchId === "string" && body.branchId.trim() ? body.branchId.trim() : undefined;
 
   try {
     const settings = getSettings();
@@ -775,7 +843,7 @@ router.post("/:chatId/action-tree/generate", async (req, res) => {
       return;
     }
 
-    const timeline = getRecentTimelineWindow(chatId, windowSize);
+    const timeline = getRecentTimelineWindow(chatId, windowSize, branchId);
     if (timeline.length === 0) {
       res.status(400).json({ error: "No messages in chat to analyze" });
       return;
@@ -913,6 +981,7 @@ router.post("/:chatId/relationships/generate", async (req, res) => {
     : MANUAL_GENERATE_WINDOW_DEFAULT;
   const persist = body.persist !== false; // default true
   const overrideModelId = typeof body.modelId === "string" && body.modelId.trim() ? body.modelId.trim() : null;
+  const branchId = typeof body.branchId === "string" && body.branchId.trim() ? body.branchId.trim() : undefined;
 
   try {
     const settings = getSettings();
@@ -932,7 +1001,7 @@ router.post("/:chatId/relationships/generate", async (req, res) => {
       return;
     }
 
-    const timeline = getRecentTimelineWindow(chatId, windowSize);
+    const timeline = getRecentTimelineWindow(chatId, windowSize, branchId);
     if (timeline.length === 0) {
       res.status(400).json({ error: "No messages in chat to analyze" });
       return;

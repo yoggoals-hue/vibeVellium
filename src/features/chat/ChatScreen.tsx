@@ -216,11 +216,21 @@ export function ChatScreen() {
   const [inspectorSection, setInspectorSection] = useState<Record<string, boolean>>({
     scene: true, sampler: false, context: false
   });
-  // Model selection panel collapse — default expanded (same as before), but
-  // one click on the chevron collapses it to a compact single-row inline form
-  // (provider + model + mode + apply, no labels, minimal padding) so it stops
-  // eating vertical space in the chat header.
-  const [modelPanelCollapsed, setModelPanelCollapsed] = useState(false);
+  // Model selection panel collapse — default expanded on desktop, but
+  // auto-collapsed on mobile so the chat header stops eating the whole
+  // viewport. One click on the chevron re-expands it to the full
+  // provider + model + mode + apply form.
+  const [modelPanelCollapsed, setModelPanelCollapsed] = useState(() =>
+    typeof window !== "undefined" && window.innerWidth < 768
+  );
+  // Mobile-only overlay toggles for the LEGACY 3-panel chat layout.
+  // On phones the left (chat list) and right (inspector) panels are
+  // converted to slide-in drawers by styles.css; these two flags track
+  // whether each drawer is currently open. They have no effect on
+  // desktop or in simple mode (where simpleSidebarOpen / simpleInspectorOpen
+  // are used instead).
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const [toolPanelsExpanded, setToolPanelsExpanded] = useState<Record<string, boolean>>({});
   const [reasoningPanelsExpanded, setReasoningPanelsExpanded] = useState<Record<string, boolean>>({});
   const [deletingMessageIds, setDeletingMessageIds] = useState<Record<string, boolean>>({});
@@ -1869,9 +1879,27 @@ export function ChatScreen() {
         </>
       )}
 
+      {/* Mobile overlay backdrop for legacy chat mode — taps anywhere outside
+          the open sidebar/inspector drawer close it. Only rendered in legacy
+          mode (simple mode has its own overlay handling via chat-simple-layout
+          classes). The element is always mounted but inert (display: none on
+          desktop, opacity: 0 on mobile) until .is-open is added. */}
+      {!simpleModeActive && !zenMode && (
+        <button
+          type="button"
+          aria-label="Close overlay"
+          tabIndex={-1}
+          className={`mobile-overlay-backdrop ${(mobileSidebarOpen || mobileInspectorOpen) ? "is-open" : ""}`}
+          onClick={() => {
+            setMobileSidebarOpen(false);
+            setMobileInspectorOpen(false);
+          }}
+        />
+      )}
+
       <ThreePanelLayout
         layout={zenMode ? "center" : "three"}
-        className={simpleModeActive ? `chat-simple-layout ${simpleSidebarOpen ? "is-sidebar-open" : "is-sidebar-closed"} ${simpleInspectorOpen ? "is-inspector-open" : "is-inspector-closed"} ${simpleHomeState ? "is-home" : "is-thread"}` : ""}
+        className={simpleModeActive ? `chat-simple-layout ${simpleSidebarOpen ? "is-sidebar-open" : "is-sidebar-closed"} ${simpleInspectorOpen ? "is-inspector-open" : "is-inspector-closed"} ${simpleHomeState ? "is-home" : "is-thread"}` : `chat-legacy-layout ${mobileSidebarOpen ? "is-mobile-sidebar-open" : ""} ${mobileInspectorOpen ? "is-mobile-inspector-open" : ""}`}
         leftClassName={simpleModeActive ? "chat-simple-sidebar-panel" : ""}
         centerClassName={simpleModeActive ? "chat-simple-center-panel" : ""}
         rightClassName={simpleModeActive ? "chat-simple-right-panel" : ""}
@@ -2330,10 +2358,31 @@ export function ChatScreen() {
             {(!simpleModeActive || !simpleHomeState) && (
             <div className={`mb-3 ${simpleModeActive ? "chat-simple-thread-header" : ""}`}>
               {!simpleModeActive ? (
-                <div className="rounded-xl border border-border-subtle bg-bg-primary/95 p-3 shadow-[0_18px_40px_rgba(0,0,0,0.18)]">
+                <div className="chat-legacy-thread-card rounded-xl border border-border-subtle bg-bg-primary/95 p-3 shadow-[0_18px_40px_rgba(0,0,0,0.18)]">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
+                        {/* Mobile-only hamburger button — opens the chat list
+                            sidebar as a slide-in overlay. Hidden on desktop
+                            where the sidebar is always visible in the 3-col
+                            layout. The .chat-mobile-toggle-btn base rule has
+                            display:none; the mobile media query flips it to
+                            inline-flex. */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMobileSidebarOpen(true);
+                            setMobileInspectorOpen(false);
+                          }}
+                          className={`chat-mobile-toggle-btn ${mobileSidebarOpen ? "is-active" : ""}`}
+                          title={t("chat.title")}
+                          aria-label={t("chat.title")}
+                          aria-expanded={mobileSidebarOpen}
+                        >
+                          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                          </svg>
+                        </button>
                         <h2 className="truncate text-sm font-semibold text-text-primary">
                           {activeChat ? activeChat.title : t("tab.chat")}
                         </h2>
@@ -2484,43 +2533,69 @@ export function ChatScreen() {
                         } disabled:cursor-not-allowed disabled:opacity-40`}>
                         {compressing ? t("chat.compressing") : t("chat.compress")}
                       </button>
+                      {/* Secondary actions (Zen / Debug / What if?) — hidden on
+                          phones via .chat-legacy-secondary-actions { display: none }
+                          to keep the chat header compact. They remain visible on
+                          desktop where horizontal space is plentiful. The
+                          inspector toggle button below provides mobile access to
+                          the same payload/scene controls. */}
+                      <span className="chat-legacy-secondary-actions inline-flex flex-wrap items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => setZenMode((prev) => !prev)}
+                          className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                            zenMode
+                              ? "border-accent-border bg-accent-subtle text-accent"
+                              : "border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                          }`}
+                          title={zenMode ? t("chat.exitZenMode") : t("chat.zenMode")}
+                        >
+                          {zenMode ? t("chat.exitZenMode") : t("chat.zenMode")}
+                        </button>
+                        <button
+                          onClick={() => { setDebugPayloadOpen(true); window.dispatchEvent(new Event("open-inspector")); }}
+                          className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                            debugPayloadOpen
+                              ? "border-accent-border bg-accent-subtle text-accent"
+                              : "border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                          }`}
+                          title={t("chat.debugPayload")}
+                        >
+                          {t("chat.debugPayload")}
+                        </button>
+                        <button
+                          onClick={() => {
+                            // Find the last user message to use as the what-if base
+                            const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+                            if (lastUserMsg) {
+                              setWhatIfMessageId(lastUserMsg.id);
+                              setWhatIfOriginalContent(lastUserMsg.content || "");
+                              setWhatIfOpen(true);
+                            }
+                          }}
+                          disabled={!activeChat || messages.length === 0}
+                          className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-40"
+                          title={t("whatIf.title")}
+                        >
+                          {t("whatIf.button")}
+                        </button>
+                      </span>
+                      {/* Mobile-only inspector toggle — slides the right-side
+                          inspector panel in as an overlay. Hidden on desktop. */}
                       <button
-                        onClick={() => setZenMode((prev) => !prev)}
-                        className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                          zenMode
-                            ? "border-accent-border bg-accent-subtle text-accent"
-                            : "border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-                        }`}
-                        title={zenMode ? t("chat.exitZenMode") : t("chat.zenMode")}
-                      >
-                        {zenMode ? t("chat.exitZenMode") : t("chat.zenMode")}
-                      </button>
-                      <button
-                        onClick={() => { setDebugPayloadOpen(true); window.dispatchEvent(new Event("open-inspector")); }}
-                        className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                          debugPayloadOpen
-                            ? "border-accent-border bg-accent-subtle text-accent"
-                            : "border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-                        }`}
-                        title={t("chat.debugPayload")}
-                      >
-                        {t("chat.debugPayload")}
-                      </button>
-                      <button
+                        type="button"
                         onClick={() => {
-                          // Find the last user message to use as the what-if base
-                          const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
-                          if (lastUserMsg) {
-                            setWhatIfMessageId(lastUserMsg.id);
-                            setWhatIfOriginalContent(lastUserMsg.content || "");
-                            setWhatIfOpen(true);
-                          }
+                          setMobileInspectorOpen(true);
+                          setMobileSidebarOpen(false);
                         }}
-                        disabled={!activeChat || messages.length === 0}
-                        className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-40"
-                        title={t("whatIf.title")}
+                        className={`chat-mobile-toggle-btn ${mobileInspectorOpen ? "is-active" : ""}`}
+                        title={t("inspector.title")}
+                        aria-label={t("inspector.title")}
+                        aria-expanded={mobileInspectorOpen}
                       >
-                        {t("whatIf.button")}
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
                       </button>
                     </div>
                   </div>

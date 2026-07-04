@@ -126,7 +126,9 @@ export const memoryClient = {
   // Manual AI generation: send the last N (default 15) user+assistant messages
   // to the active provider/model and persist a new action-tree node. Use this
   // when the model doesn't natively emit <action_tree> blocks during replies.
-  actionTreeGenerate: (chatId: string, body?: { windowSize?: number; modelId?: string; persist?: boolean }) =>
+  // Pass branchId to analyze a specific branch; omit to auto-resolve the chat's
+  // main branch.
+  actionTreeGenerate: (chatId: string, body?: { windowSize?: number; modelId?: string; persist?: boolean; branchId?: string }) =>
     post<{
       node: ActionTreeNodeDto | null;
       draft: { character: string; actions: string[]; dialogue: string; outcome: ActionTreeNodeDto["outcome"]; notes: string; tags: string[]; relationships: Array<{ source: string; target: string; word: string }> };
@@ -172,7 +174,7 @@ export const memoryClient = {
 
   // Body State
   bodyStateGet: (chatId: string) =>
-    get<{ config: BodyStateConfigDto; meters: BodyStateMeterDto[] }>(`/memory/${chatId}/body-state`),
+    get<{ config: BodyStateConfigDto; meters: BodyStateMeterDto[]; characters: BodyStateCharacterDto[] }>(`/memory/${chatId}/body-state`),
   bodyStateUpdateConfig: (chatId: string, patch: Partial<Omit<BodyStateConfigDto, "chatId" | "updatedAt">>) =>
     put<{ config: BodyStateConfigDto }>(`/memory/${chatId}/body-state/config`, patch),
   bodyStateSetMeter: (chatId: string, body: { characterId: string; meter: BodyStateMeterDto["meter"]; value: number; locked?: boolean }) =>
@@ -185,7 +187,9 @@ export const memoryClient = {
   // Manual AI generation: send the last N (default 15) user+assistant messages
   // to the active provider/model and persist new relationship rows. The model
   // sees the current relationships list so it can carry forward unchanged ones.
-  relationshipsGenerate: (chatId: string, body?: { windowSize?: number; modelId?: string; persist?: boolean }) =>
+  // Pass branchId to analyze a specific branch; omit to auto-resolve the chat's
+  // main branch.
+  relationshipsGenerate: (chatId: string, body?: { windowSize?: number; modelId?: string; persist?: boolean; branchId?: string }) =>
     post<{
       relationships: Array<{ id: string; source: string; target: string; word: string; turn: number; createdAt: string }>;
       draft: Array<{ source: string; target: string; word: string }>;
@@ -263,6 +267,15 @@ export interface BodyStateMeterDto {
   value: number;
   locked: boolean;
   updatedAt: string;
+}
+
+// Character info returned by GET /memory/:chatId/body-state so the UI can
+// show character names (instead of truncated UUIDs) and mark the primary
+// character for the chat.
+export interface BodyStateCharacterDto {
+  id: string;
+  name: string;
+  isPrimary: boolean;
 }
 
 // ----- Relationships DTOs -----
